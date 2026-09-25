@@ -1,0 +1,13 @@
+[submodule "extern/XexTool"]
+	path = extern/XexTool
+	url = https://github.com/ExposureMG/XexTool
+	branch = Exposure
+[submodule "extern/gxbuild3"]
+	path = extern/gxbuild3
+	url = https://github.com/ExposureMG/gxbuild3
+[submodule "extern/Genexis"]
+	path = extern/Genexis
+	url = https://github.com/ExposureMG/Genexis
+[submodule "extern/FATX"]
+	path = extern/FATX
+	url = https://github.com/ExposureMG/FATX
