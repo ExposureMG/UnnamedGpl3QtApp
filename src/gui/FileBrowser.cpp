@@ -1,11 +1,20 @@
 #include "gui/FileBrowser.hpp"
 
+#include <QFileInfo>
+
 namespace unnamed::gui {
 
 FileBrowser::FileBrowser(QObject* parent)
     : QObject(parent),
       m_registry(core::FileSystemRegistry::withBuiltins()),
       m_model(new FileSystemModel(this)) {}
+
+QString FileBrowser::rootName() const {
+    if (m_rootPath.isEmpty())
+        return {};
+    const QString name = QFileInfo(m_rootPath).fileName();
+    return name.isEmpty() ? m_rootPath : name;
+}
 
 QString FileBrowser::statusText() const {
     return isOpen() ? tr("%n item(s)", nullptr, m_model->rowCount()) : tr("Open a folder to begin");
@@ -19,6 +28,7 @@ void FileBrowser::openFolder(const QUrl& folder) {
         return;
     }
     m_model->setFileSystem(std::move(fs));
+    m_rootPath = folder.toLocalFile();
     setError({});
     emit stateChanged();
 }

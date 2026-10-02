@@ -10,7 +10,7 @@ set(CMAKE_AUTOMOC ON)
 
 option(UNNAMED_BUILD_TESTS "Build unit tests" ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Widgets)
 find_package(KF6Kirigami REQUIRED)
 
 # Optional external libraries live in extern/ (git submodules). They are not
@@ -37,8 +37,10 @@ qt_add_qml_module(UnnamedGpl3QtApp
     URI org.exposuremg.unnamed
     VERSION 1.0
     QML_FILES
-        qml/Main.qml
-        qml/BrowserPage.qml
+        QML/Main.qml
+        QML/components/StatusBar.qml
+        QML/pages/About.qml
+        QML/pages/Browser.qml
     SOURCES
         include/gui/FileBrowser.hpp
         include/gui/FileSystemModel.hpp
@@ -51,6 +53,7 @@ target_link_libraries(UnnamedGpl3QtApp PRIVATE
     unnamed_core
     Qt6::Quick
     Qt6::QuickControls2
+    Qt6::Widgets
     KF6::Kirigami
 )
 

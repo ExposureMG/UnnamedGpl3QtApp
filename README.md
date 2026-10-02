@@ -5,8 +5,9 @@ Stuff I wanted to put in [Genexis](https://github.com/ExposureMG/Genexis) but I 
 
 # Building
 
-Requires CMake >= 3.21, a C++20 compiler, Qt >= 6.5 (Quick, Quick Controls 2,
-Quick Dialogs) and KDE Frameworks 6 (Kirigami, plus extra-cmake-modules).
+Requires CMake >= 3.21, a C++20 compiler, Qt >= 6.5 (Widgets, Quick, Quick
+Controls 2, Quick Dialogs) and KDE Frameworks 6 Kirigami. KF6 QQC2 Desktop Style
+is optional: it is used when installed, otherwise Qt's default style is used.
 
 ```sh
 git submodule update --init --recursive   # optional for now, see extern/
@@ -24,15 +25,27 @@ include/core, src/core   GUI-free library (unnamed_core, std C++ only)
   LocalFileSystem          host directory backend
   FileSystemRegistry       kind -> factory; new backends (FATX, STFS, NAND, ...) register here
 include/gui, src/gui     C++ glue exposed to QML (talks to core::FileSystem only)
-  FileBrowser              controller: open filesystem, path, navigation, errors
+  FileBrowser              QML singleton: open filesystem, path, navigation, errors
   FileSystemModel          list model over one directory of a FileSystem
-qml/                     Kirigami UI (QML module org.exposuremg.unnamed)
-  Main.qml                 ApplicationWindow, global drawer, actions, folder dialog
-  BrowserPage.qml          file list page
+QML/                     Kirigami UI (QML module org.exposuremg.unnamed)
+  Main.qml                 ApplicationWindow: status bar header, navigation drawer, dialogs
+  components/StatusBar.qml top toolbar (menu button, page title, Open Folder)
+  pages/Browser.qml        folder card + file list
+  pages/About.qml          about page
 src/Main.cpp             application entry point (loads the QML module)
 tests/                   unit tests for core (run via ctest)
 extern/                  git submodules (XexTool, gxbuild3, Genexis, FATX)
 ```
+
+# Design language
+
+The UI follows [Genexis](https://github.com/ExposureMG/Genexis): Kirigami on Qt
+Quick Controls 2 with the KDE desktop style, no global toolbar but a custom
+`StatusBar` header (menu button, separator, bold page title, actions), a modal
+navigation drawer with a footer item, single-page navigation via
+`switchPage()`, `Kirigami.AbstractCard` summary cards, Kirigami `Units` for all
+spacing, and one global error dialog. Keep new pages and components in that
+style (see `QML/`).
 
 Adding a filesystem: implement `core::FileSystem` (only `list()` is required,
 override the other operations and report them via `capabilities()`), then
