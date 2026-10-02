@@ -3,6 +3,41 @@
 Stuff I wanted to put in [Genexis](https://github.com/ExposureMG/Genexis) but I can't because it's GPL V3
 
 
+# Building
+
+Requires CMake >= 3.21, a C++20 compiler, Qt >= 6.5 (Quick, Quick Controls 2,
+Quick Dialogs) and KDE Frameworks 6 (Kirigami, plus extra-cmake-modules).
+
+```sh
+git submodule update --init --recursive   # optional for now, see extern/
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build                    # core unit tests
+./build/UnnamedGpl3QtApp
+```
+
+# Project layout
+
+```
+include/core, src/core   GUI-free library (unnamed_core, std C++ only)
+  FileSystem               abstract filesystem + Capability flags (browse, extract, inject, ...)
+  LocalFileSystem          host directory backend
+  FileSystemRegistry       kind -> factory; new backends (FATX, STFS, NAND, ...) register here
+include/gui, src/gui     C++ glue exposed to QML (talks to core::FileSystem only)
+  FileBrowser              controller: open filesystem, path, navigation, errors
+  FileSystemModel          list model over one directory of a FileSystem
+qml/                     Kirigami UI (QML module org.exposuremg.unnamed)
+  Main.qml                 ApplicationWindow, global drawer, actions, folder dialog
+  BrowserPage.qml          file list page
+src/Main.cpp             application entry point (loads the QML module)
+tests/                   unit tests for core (run via ctest)
+extern/                  git submodules (XexTool, gxbuild3, Genexis, FATX)
+```
+
+Adding a filesystem: implement `core::FileSystem` (only `list()` is required,
+override the other operations and report them via `capabilities()`), then
+register a factory in `FileSystemRegistry::withBuiltins()`.
+
 # Heavy WIP
 
 
