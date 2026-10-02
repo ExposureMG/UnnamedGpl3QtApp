@@ -1,5 +1,7 @@
 #include "core/FileSystemRegistry.hpp"
+#include "core/DemoFileSystem.hpp"
 #include "core/LocalFileSystem.hpp"
+#include "core/PathUtil.hpp"
 
 #include <system_error>
 
@@ -11,10 +13,13 @@ FileSystemRegistry FileSystemRegistry::withBuiltins() {
                               -> std::unique_ptr<FileSystem> {
         std::error_code ec;
         if (!std::filesystem::is_directory(path, ec)) {
-            error = "Not a directory: " + path.string();
+            error = "Not a directory: " + pathToUtf8(path);
             return nullptr;
         }
         return std::make_unique<LocalFileSystem>(path);
+    });
+    registry.add("Demo", [](const std::filesystem::path&, std::string&) -> std::unique_ptr<FileSystem> {
+        return std::make_unique<DemoFileSystem>();
     });
     // Future backends (FATX, STFS, NAND, ...) register here.
     return registry;

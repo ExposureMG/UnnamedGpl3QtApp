@@ -1,3 +1,4 @@
+#include <KIconTheme>
 #include <QApplication>
 #include <QDir>
 #include <QQmlApplicationEngine>
@@ -14,9 +15,14 @@ static bool kdeDesktopStyleInstalled(const QQmlApplicationEngine& engine) {
 }
 
 int main(int argc, char* argv[]) {
+    // Must run before QApplication: picks the (bundled) Breeze icon theme so the
+    // UI has icons on Windows, macOS and Android too, as in Genexis.
+    KIconTheme::initTheme();
+
     // QApplication (not QGuiApplication): the KDE desktop Quick Controls style
     // needs the widgets platform integration.
     QApplication app(argc, argv);
+    app.setOrganizationName("ExposureMG");
     app.setApplicationName("UnnamedGpl3QtApp");
 
     QQmlApplicationEngine engine;

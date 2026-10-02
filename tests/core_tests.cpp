@@ -1,4 +1,5 @@
 // Minimal dependency-free tests for the GUI-free core library.
+#include "core/DemoFileSystem.hpp"
 #include "core/FileSystemRegistry.hpp"
 #include "core/LocalFileSystem.hpp"
 
@@ -45,10 +46,49 @@ int main() {
     CHECK(joinPath("/", "x") == "/x");
     CHECK(joinPath("/dir", "x") == "/dir/x");
 
+    // Kinds, timestamps and the expanded (details) view of the local backend.
+    CHECK(kindFromName("default.xex") == "xex");
+    CHECK(kindFromName("LAUNCH.INI") == "ini");
+    CHECK(kindFromName("noextension") == "file");
+    CHECK(local.list("/", entries));
+    for (const Entry& e : entries) {
+        if (e.name == "dir")
+            CHECK(e.kind == "folder");
+        if (e.name == "a.txt") {
+            CHECK(e.kind == "file");
+            CHECK(e.modified > 0);
+        }
+    }
+    Details details;
+    CHECK(local.describe("/a.txt", details));
+    CHECK(details.title == "a.txt");
+    CHECK(!details.groups.empty() && details.groups[0].title == "General");
+    CHECK(!local.describe("/../etc", details));
+    CHECK(local.describeFileSystem(details));
+    CHECK(details.kind == "filesystem");
+    CHECK(hasCapability(local.capabilities(), Capability::Inspect));
+
+    // Demo (sample data) filesystem: browsable, inspectable, read-only.
+    DemoFileSystem demo;
+    CHECK(!hasCapability(demo.capabilities(), Capability::Remove));
+    CHECK(demo.list("/Games/Sample Title", entries));
+    CHECK(entries.size() == 2);
+    CHECK(demo.describe("/Games/Sample Title/default.xex", details));
+    CHECK(details.kind == "xex");
+    CHECK(!details.notice.empty());
+    bool hasExecutable = false;
+    for (const auto& g : details.groups)
+        hasExecutable = hasExecutable || g.title == "Executable";
+    CHECK(hasExecutable);
+    CHECK(demo.describeFileSystem(details));
+    CHECK(!demo.list("/nope", entries));
+    CHECK(!demo.remove("/readme.txt")); // unsupported by default
+
     auto registry = FileSystemRegistry::withBuiltins();
     std::string error;
     CHECK(registry.open("Local", root, error) != nullptr);
     CHECK(registry.open("Nope", root, error) == nullptr);
+    CHECK(registry.open("Demo", {}, error) != nullptr);
     CHECK(registry.open("Local", root / "a.txt", error) == nullptr);
 
     fs::remove_all(root);

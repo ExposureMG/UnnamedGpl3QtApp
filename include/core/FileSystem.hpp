@@ -14,7 +14,32 @@ enum class EntryType { File, Directory };
 struct Entry {
     std::string name;
     EntryType type = EntryType::File;
+    // "folder" for directories, otherwise a lowercase format id such as "xex",
+    // "stfs", "ini" or "file". Drives icons and the expanded view in the UI.
+    std::string kind = "file";
     std::uint64_t size = 0;
+    std::int64_t modified = 0; // seconds since the Unix epoch, 0 = unknown
+};
+
+// One labelled value in the expanded (details) view.
+struct Property {
+    std::string label;
+    std::string value;
+};
+
+struct PropertyGroup {
+    std::string title;
+    std::vector<Property> items;
+};
+
+// Everything the UI shows in the expanded view of a file/folder, or of the
+// filesystem object itself.
+struct Details {
+    std::string title;
+    std::string subtitle;
+    std::string kind;
+    std::string notice; // optional banner, e.g. "Sample data"
+    std::vector<PropertyGroup> groups;
 };
 
 // Operations a filesystem may support (see "FS Functions" in the README).
@@ -27,6 +52,7 @@ enum class Capability : unsigned {
     Clear       = 1u << 5,
     HealthCheck = 1u << 6,
     Repair      = 1u << 7,
+    Inspect     = 1u << 8,
 };
 
 constexpr Capability operator|(Capability a, Capability b) {
@@ -51,6 +77,11 @@ public:
 
     virtual Status list(const std::string& path, std::vector<Entry>& out) const = 0;
 
+    // Expanded view of a file/folder (needs Capability::Inspect).
+    virtual Status describe(const std::string& path, Details& out) const;
+    // Expanded view of the filesystem object itself (needs Capability::Inspect).
+    virtual Status describeFileSystem(Details& out) const;
+
     // Copy a file/directory out of the filesystem to a host path.
     virtual Status extract(const std::string& path, const std::filesystem::path& hostDest);
     // Copy a host file into the directory `dir` of the filesystem.
@@ -62,6 +93,14 @@ public:
     virtual Status healthCheck(std::string& report);
     virtual Status repair(std::string& report);
 };
+
+// Human readable names of the operations set in `caps` (for the details view).
+std::vector<std::string> capabilityNames(Capability caps);
+
+// Maps a file name to a kind id ("xex", "ini", ...); "file" if unknown.
+std::string kindFromName(const std::string& name);
+// Human readable label for a kind id ("Xbox 360 executable", ...).
+std::string kindLabel(const std::string& kind);
 
 // Helpers for virtual paths.
 std::string joinPath(const std::string& dir, const std::string& name);

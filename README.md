@@ -6,8 +6,10 @@ Stuff I wanted to put in [Genexis](https://github.com/ExposureMG/Genexis) but I 
 # Building
 
 Requires CMake >= 3.21, a C++20 compiler, Qt >= 6.5 (Widgets, Quick, Quick
-Controls 2, Quick Dialogs) and KDE Frameworks 6 Kirigami. KF6 QQC2 Desktop Style
-is optional: it is used when installed, otherwise Qt's default style is used.
+Controls 2, Quick Dialogs) and KDE Frameworks 6 Kirigami and IconThemes (the
+latter initialises the Breeze icon theme so icons work on every platform, as in
+Genexis). KF6 QQC2 Desktop Style is optional: it is used when installed,
+otherwise Qt's default style is used.
 
 ```sh
 git submodule update --init --recursive   # optional for now, see extern/
@@ -21,21 +23,41 @@ ctest --test-dir build                    # core unit tests
 
 ```
 include/core, src/core   GUI-free library (unnamed_core, std C++ only)
-  FileSystem               abstract filesystem + Capability flags (browse, extract, inject, ...)
+  FileSystem               abstract filesystem: list, describe (expanded view),
+                           extract/inject/replace/remove/..., Capability flags
   LocalFileSystem          host directory backend
+  DemoFileSystem           read-only *sample data* filesystem (XEX, STFS, ... views)
   FileSystemRegistry       kind -> factory; new backends (FATX, STFS, NAND, ...) register here
 include/gui, src/gui     C++ glue exposed to QML (talks to core::FileSystem only)
-  FileBrowser              QML singleton: open filesystem, path, navigation, errors
-  FileSystemModel          list model over one directory of a FileSystem
+  FileBrowser              singleton: mounts, path, selection, details, operations
+  FileSystemModel          current folder as a list model (sort + filter)
+  MountModel               open filesystems ("places")
 QML/                     Kirigami UI (QML module org.exposuremg.unnamed)
-  Main.qml                 ApplicationWindow: status bar header, navigation drawer, dialogs
-  components/StatusBar.qml top toolbar (menu button, page title, Open Folder)
-  pages/Browser.qml        folder card + file list
+  Main.qml                 window: status bar, nav drawer, shared actions/dialogs, details toggle
+  pages/Browser.qml        places sidebar + breadcrumb + toolbar + list/icon view
+  pages/Details.qml        expanded view page (Item / Filesystem tabs)
   pages/About.qml          about page
+  components/              StatusBar, PlacesSidebar, PathBar, FileListView, FileGridView,
+                           DetailsView, ItemActions, KindIcon
 src/Main.cpp             application entry point (loads the QML module)
 tests/                   unit tests for core (run via ctest)
 extern/                  git submodules (XexTool, gxbuild3, Genexis, FATX)
 ```
+
+# File browser UI
+
+- **Places** sidebar lists the open filesystems (a drawer on narrow windows).
+- **Breadcrumb**, filter field, sort menu, list (sortable columns) and icon view.
+- **Expanded view** (Alt+Return or the info button): a second page in Kirigami's
+  page row. Side by side with the browser on wide windows, stacked with a back
+  button on narrow ones (phones/tablets). The *Item* tab describes the selected
+  file or folder (XEX, STFS, INI, ... each get their own property groups); the
+  *Filesystem* tab describes the filesystem object itself (type, capacity,
+  health, supported operations).
+- Extract / Replace / Delete / Add Files are enabled from the filesystem's
+  capabilities (context menu, details page, toolbar, drag and drop).
+- *Open > Open Demo* loads sample data so the expanded views can be explored
+  before the real format backends exist.
 
 # Design language
 

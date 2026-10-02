@@ -10,7 +10,7 @@ Kirigami.ApplicationWindow {
     id: root
 
     title: qsTr("Unnamed Gpl3 Qt App")
-    width: 800
+    width: 1000
     height: 720
     minimumWidth: 380
     minimumHeight: 480
@@ -24,7 +24,10 @@ Kirigami.ApplicationWindow {
         pageTitle: root.pageStack.currentItem ? root.pageStack.currentItem.title : root.title
 
         onMenuRequested: root.globalDrawer.drawerOpen = !root.globalDrawer.drawerOpen
+        canGoBack: root.pageStack.depth > 1
+        onBackRequested: root.hideDetails()
         onOpenFolderRequested: root.openFolderDialog()
+        onOpenDemoRequested: FileBrowser.openDemo()
     }
 
     globalDrawer: Kirigami.GlobalDrawer {
@@ -38,7 +41,7 @@ Kirigami.ApplicationWindow {
         actions: [
             Kirigami.Action {
                 text: qsTr("Browser")
-                onTriggered: root.switchPage("pages/Browser.qml")
+                onTriggered: root.switchPage("pages/Browser.qml", {"app": root})
             }
         ]
 
@@ -64,6 +67,13 @@ Kirigami.ApplicationWindow {
         onAccepted: FileBrowser.openFolder(selectedFolder)
     }
 
+    // Shared by the browser toolbar, context menu and details page.
+    ItemActions {
+        id: itemActions
+        onPropertiesRequested: root.showDetails(false)
+    }
+    property alias itemActions: itemActions
+
     Shortcut {
         sequences: [StandardKey.Open]
         onActivated: root.openFolderDialog()
@@ -85,9 +95,11 @@ Kirigami.ApplicationWindow {
     Connections {
         target: FileBrowser
 
-        function onErrorMessageChanged() {
-            if (FileBrowser.errorMessage !== "")
-                root.showError(qsTr("Error"), FileBrowser.errorMessage);
+        function onErrorOccurred(message) {
+            root.showError(qsTr("Error"), message);
+        }
+        function onNotice(message) {
+            root.showPassiveNotification(message);
         }
     }
 
@@ -101,13 +113,38 @@ Kirigami.ApplicationWindow {
         folderDialog.open();
     }
 
-    function switchPage(url) {
+    // The expanded view is a second page in the page row (side by side when
+    // the window is wide, stacked with a back button when narrow).
+    readonly property bool detailsOpen: pageStack.depth > 1
+
+    function showDetails(fileSystemTab) {
+        if (fileSystemTab !== undefined)
+            FileBrowser.inspectFileSystem = fileSystemTab;
+        if (!detailsOpen)
+            pageStack.push(Qt.resolvedUrl("pages/Details.qml"), {"app": root});
+        else
+            pageStack.currentIndex = 1;
+    }
+
+    function hideDetails() {
+        if (detailsOpen)
+            pageStack.pop();
+    }
+
+    function toggleDetails() {
+        if (detailsOpen)
+            hideDetails();
+        else
+            showDetails();
+    }
+
+    function switchPage(url, properties) {
         pageStack.clear();
-        pageStack.push(Qt.resolvedUrl(url));
+        pageStack.push(Qt.resolvedUrl(url), properties || {});
         navDrawer.drawerOpen = false;
     }
 
     Component.onCompleted: {
-        pageStack.push(Qt.resolvedUrl("pages/Browser.qml"));
+        pageStack.push(Qt.resolvedUrl("pages/Browser.qml"), {"app": root});
     }
 }

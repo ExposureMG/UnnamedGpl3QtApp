@@ -8,8 +8,12 @@ QQC2.ToolBar {
 
     property string pageTitle: qsTr("Unnamed Gpl3 Qt App")
 
+    property bool canGoBack: false
+
     signal menuRequested
+    signal backRequested
     signal openFolderRequested
+    signal openDemoRequested
 
     position: QQC2.ToolBar.Header
 
@@ -22,6 +26,17 @@ QQC2.ToolBar {
             onClicked: root.menuRequested()
 
             QQC2.ToolTip.text: qsTr("Navigation menu")
+            QQC2.ToolTip.visible: hovered
+            QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+        }
+
+        QQC2.ToolButton {
+            visible: root.canGoBack
+            icon.name: "go-previous"
+            display: QQC2.AbstractButton.IconOnly
+            onClicked: root.backRequested()
+
+            QQC2.ToolTip.text: qsTr("Close details")
             QQC2.ToolTip.visible: hovered
             QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
         }
@@ -41,11 +56,27 @@ QQC2.ToolBar {
         }
 
         QQC2.ToolButton {
-            text: qsTr("Open Folder")
+            id: openButton
+            text: qsTr("Open")
             icon.name: "folder-open"
             display: QQC2.AbstractButton.TextBesideIcon
             Layout.rightMargin: Kirigami.Units.largeSpacing
-            onClicked: root.openFolderRequested()
+            onClicked: openMenu.popup(openButton, 0, openButton.height)
+
+            QQC2.Menu {
+                id: openMenu
+
+                QQC2.MenuItem {
+                    text: qsTr("Open Folder…")
+                    icon.name: "folder-open"
+                    onTriggered: root.openFolderRequested()
+                }
+                QQC2.MenuItem {
+                    text: qsTr("Open Demo (sample data)")
+                    icon.name: "applications-development"
+                    onTriggered: root.openDemoRequested()
+                }
+            }
         }
     }
 }
