@@ -107,7 +107,18 @@ writing needs an explicit unlock and format needs type-to-confirm.
   capacity), extract, health check (fsck dry run). Partition images and Xbox 360
   disk images (each FATX partition becomes a place). GUI: *Open FATX Image…*
   and *Check Filesystem*. Tested against images made by `mkfs.fatx`
-- [ ] Write support, format
+- [x] Write support: inject/replace (through a temporary file renamed over
+  the target in `finish()`; a dropped transfer deletes it), new folder,
+  rename, delete, clear, repair (fsck with default answers), format (mkfs).
+  FATX name rules (ASCII, 42 characters, allowed characters, no names that
+  differ only in case) are checked with clear messages. Places open
+  read-only; *Enable Writing…* reopens one writable after a warning; *Format…*
+  needs the place's name typed and is only offered on a writable place.
+  Round trips are checked with the library's fsck and `fsck.fatx`; damaged
+  images are fuzzed (fork: 300 rounds per test run, 6000 more run once with
+  other seeds; app: 60 rounds), ASan/UBSan clean.
+  Not atomic on power loss: replacing deletes the old file, then renames the
+  new one (two directory writes)
 - [ ] Drives
 
 ## Risks

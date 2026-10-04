@@ -45,6 +45,7 @@ Status FileSystem::remove(const std::string&) { return unsupported(*this, "Delet
 Status FileSystem::clear(const std::string&) { return unsupported(*this, "Clear"); }
 Status FileSystem::healthCheck(std::string&) { return unsupported(*this, "Health check"); }
 Status FileSystem::repair(std::string&) { return unsupported(*this, "Repair"); }
+Status FileSystem::format(const std::string&) { return unsupported(*this, "Format"); }
 
 Status FileSystem::describe(const std::string&, Details&) const {
     return unsupported(*this, "Inspect");
@@ -58,7 +59,7 @@ std::vector<std::string> capabilityNames(Capability caps) {
         {Capability::Replace, "Replace"},      {Capability::Remove, "Delete"},
         {Capability::MakeDirectory, "Make folder"}, {Capability::Rename, "Rename"},
         {Capability::Clear, "Clear"},          {Capability::HealthCheck, "Health check"},
-        {Capability::Repair, "Repair"},
+        {Capability::Repair, "Repair"},        {Capability::Format, "Format"},
     };
     std::vector<std::string> out;
     for (const auto& [flag, name] : names) {

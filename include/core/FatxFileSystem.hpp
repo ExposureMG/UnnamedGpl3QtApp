@@ -32,4 +32,8 @@ std::vector<FatxPartition> probeFatx(const std::shared_ptr<BlockDevice>& device)
 Result<std::unique_ptr<FileSystem>> openFatx(std::shared_ptr<BlockDevice> device, const FatxPartition& partition,
                                              bool writable, std::string displayName);
 
+// Creates an empty FATX filesystem on a partition (mkfs.fatx): everything on it
+// is lost. The device must be writable and nothing may have it open.
+Status formatFatx(const std::shared_ptr<BlockDevice>& device, const FatxPartition& partition, const std::string& label);
+
 } // namespace unnamed::core

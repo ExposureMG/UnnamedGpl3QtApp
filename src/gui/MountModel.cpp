@@ -29,6 +29,11 @@ void MountModel::add(Mount mount) {
     endInsertRows();
 }
 
+void MountModel::changed(int index) {
+    if (index >= 0 && index < count())
+        emit dataChanged(this->index(index), this->index(index));
+}
+
 void MountModel::remove(int index) {
     if (index < 0 || index >= count())
         return;
@@ -53,12 +58,21 @@ QVariant MountModel::data(const QModelIndex& index, int role) const {
     case Qt::DisplayRole:
     case NameRole: return m.name;
     case KindRole: return m.kind;
-    case SubtitleRole: return !m.subtitle.isEmpty() ? m.subtitle : m.hostPath.isEmpty() ? m.kind : m.hostPath;
+    case SubtitleRole: {
+        QString text = !m.subtitle.isEmpty() ? m.subtitle : m.hostPath.isEmpty() ? m.kind : m.hostPath;
+        if (m.reopen) // can be unlocked: say which way it is open
+            text += m.writable ? tr(" · writable") : tr(" · read-only");
+        return text;
+    }
     case IsCurrentRole: return index.row() == m_current;
     case CanCheckRole: return core::hasCapability(m.runtime->capabilities, core::Capability::HealthCheck);
-    case WritableRole:
-        return core::hasCapability(m.runtime->capabilities, core::Capability::Inject) ||
-               core::hasCapability(m.runtime->capabilities, core::Capability::Remove);
+    case WritableRole: return m.writable;
+    case CanUnlockRole: return bool(m.reopen);
+    case CanRepairRole: return core::hasCapability(m.runtime->capabilities, core::Capability::Repair);
+    case CanFormatRole: return core::hasCapability(m.runtime->capabilities, core::Capability::Format);
+    case IsDriveRole: return m.isDrive;
+    case HostPathRole: return m.hostPath;
+    case BusyRole: return m.busy;
     }
     return {};
 }
@@ -71,6 +85,12 @@ QHash<int, QByteArray> MountModel::roleNames() const {
         {IsCurrentRole, "isCurrent"},
         {CanCheckRole, "canCheck"},
         {WritableRole, "writable"},
+        {CanUnlockRole, "canUnlock"},
+        {CanRepairRole, "canRepair"},
+        {CanFormatRole, "canFormat"},
+        {IsDriveRole, "isDrive"},
+        {HostPathRole, "hostPath"},
+        {BusyRole, "busy"},
     };
 }
 

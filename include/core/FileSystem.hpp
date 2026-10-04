@@ -56,6 +56,7 @@ enum class Capability : unsigned {
     Inspect     = 1u << 8,
     MakeDirectory = 1u << 9,
     Rename      = 1u << 10,
+    Format      = 1u << 11,
 };
 
 constexpr Capability operator|(Capability a, Capability b) {
@@ -108,9 +109,12 @@ public:
     // Renames within the same folder; `newName` is a bare name.
     virtual Status rename(const std::string& path, const std::string& newName);
     virtual Status remove(const std::string& path);
+    // Deletes everything inside the folder at `path` (Capability::Clear).
     virtual Status clear(const std::string& path);
     virtual Status healthCheck(std::string& report);
     virtual Status repair(std::string& report);
+    // Erases the whole filesystem and creates an empty one (Capability::Format).
+    virtual Status format(const std::string& label);
 };
 
 // Human readable names of the operations set in `caps` (for the details view).

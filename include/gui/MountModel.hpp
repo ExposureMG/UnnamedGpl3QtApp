@@ -5,6 +5,7 @@
 #include <QAbstractListModel>
 #include <QtQml/qqmlregistration.h>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -19,6 +20,12 @@ struct Mount {
     QString subtitle; // shown under the name; hostPath when empty
     QString currentPath = QStringLiteral("/");
     std::shared_ptr<MountRuntime> runtime;
+    // Opens the same filesystem again, read-only or writable (see
+    // FileBrowser::setMountWritable). Empty if the place cannot be reopened.
+    std::function<core::Result<std::unique_ptr<core::FileSystem>>(bool writable)> reopen;
+    bool writable = false;     // opened for writing (after an explicit unlock)
+    bool isDrive = false;      // a physical drive rather than an image file
+    bool busy = false;         // being reopened
 };
 
 class MountModel : public QAbstractListModel {
@@ -26,7 +33,20 @@ class MountModel : public QAbstractListModel {
     QML_ELEMENT
     QML_UNCREATABLE("Owned by FileBrowser")
 public:
-    enum Role { NameRole = Qt::UserRole + 1, KindRole, SubtitleRole, IsCurrentRole, CanCheckRole, WritableRole };
+    enum Role {
+        NameRole = Qt::UserRole + 1,
+        KindRole,
+        SubtitleRole,
+        IsCurrentRole,
+        CanCheckRole,
+        WritableRole,
+        CanUnlockRole,
+        CanRepairRole,
+        CanFormatRole,
+        IsDriveRole,
+        HostPathRole,
+        BusyRole,
+    };
 
     explicit MountModel(QObject* parent = nullptr);
 
@@ -39,6 +59,7 @@ public:
     void setCurrent(int index);
 
     void add(Mount mount);
+    void changed(int index); // a mount's data changed (runtime, writable, ...)
     void remove(int index);
 
     int rowCount(const QModelIndex& parent = {}) const override;

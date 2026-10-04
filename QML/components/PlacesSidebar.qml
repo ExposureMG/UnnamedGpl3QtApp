@@ -39,13 +39,20 @@ ColumnLayout {
             required property string subtitle
             required property bool isCurrent
             required property bool canCheck
+            required property bool canUnlock
+            required property bool writable
+            required property bool canRepair
+            required property bool canFormat
+            required property bool isDrive
+            required property string hostPath
+            required property bool busy
 
             width: ListView.view.width
             highlighted: isCurrent
             contentItem: Kirigami.IconTitleSubtitle {
                 icon.name: place.kind === "Local" ? "folder" : place.kind === "Demo" ? "applications-development" : "drive-harddisk"
                 title: place.name
-                subtitle: place.subtitle
+                subtitle: place.busy ? qsTr("Opening…") : place.subtitle
                 selected: place.highlighted
             }
             onClicked: {
@@ -75,11 +82,11 @@ ColumnLayout {
         id: placeMenu
 
         property int row: -1
-        property bool canCheck: false
+        property var place: null
 
         function openFor(item) {
             row = item.index;
-            canCheck = item.canCheck;
+            place = item;
             popup();
         }
 
@@ -95,9 +102,41 @@ ColumnLayout {
         QQC2.MenuItem {
             text: qsTr("Check Filesystem")
             icon.name: "checkmark"
-            visible: placeMenu.canCheck
+            visible: placeMenu.place !== null && placeMenu.place.canCheck
             height: visible ? implicitHeight : 0
             onTriggered: FileBrowser.checkMount(placeMenu.row)
+        }
+        QQC2.MenuItem {
+            text: qsTr("Repair Filesystem")
+            icon.name: "tools-wizard"
+            visible: placeMenu.place !== null && placeMenu.place.canRepair
+            height: visible ? implicitHeight : 0
+            onTriggered: FileBrowser.repairMount(placeMenu.row)
+        }
+        QQC2.MenuSeparator {
+            visible: placeMenu.place !== null && placeMenu.place.canUnlock
+            height: visible ? implicitHeight : 0
+        }
+        QQC2.MenuItem {
+            text: qsTr("Enable Writing…")
+            icon.name: "object-unlocked"
+            visible: placeMenu.place !== null && placeMenu.place.canUnlock && !placeMenu.place.writable
+            height: visible ? implicitHeight : 0
+            onTriggered: applicationWindow().confirmUnlock(placeMenu.row, placeMenu.place.name, placeMenu.place.hostPath, placeMenu.place.isDrive)
+        }
+        QQC2.MenuItem {
+            text: qsTr("Make Read-only")
+            icon.name: "object-locked"
+            visible: placeMenu.place !== null && placeMenu.place.canUnlock && placeMenu.place.writable
+            height: visible ? implicitHeight : 0
+            onTriggered: FileBrowser.setMountWritable(placeMenu.row, false)
+        }
+        QQC2.MenuItem {
+            text: qsTr("Format…")
+            icon.name: "edit-delete-shred"
+            visible: placeMenu.place !== null && placeMenu.place.canFormat && placeMenu.place.writable
+            height: visible ? implicitHeight : 0
+            onTriggered: applicationWindow().confirmFormat(placeMenu.row, placeMenu.place.name, placeMenu.place.hostPath, placeMenu.place.isDrive)
         }
         QQC2.MenuItem {
             text: qsTr("Close")

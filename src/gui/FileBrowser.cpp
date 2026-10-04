@@ -256,8 +256,14 @@ void FileBrowser::openFatxImage(const QUrl& file) {
                 mount.kind = QStringLiteral("FATX");
                 mount.hostPath = hostPath;
                 mount.detail = QString::fromStdString(p.table + "/" + p.partition);
-                mount.subtitle = tr("FATX · %1 · read-only").arg(partitions.size() == 1 ? fileName : partName);
+                mount.subtitle = tr("FATX · %1").arg(partitions.size() == 1 ? fileName : partName);
                 mount.runtime = std::make_shared<MountRuntime>(std::move(fs.value()));
+                mount.reopen = [hostPath, p, name](bool writable) -> core::Result<std::unique_ptr<core::FileSystem>> {
+                    auto dev = core::openImageFile(toHostPath(hostPath), writable);
+                    if (!dev)
+                        return dev.status();
+                    return core::openFatx(dev.value(), p, writable, name.toStdString());
+                };
                 result->mounts.push_back(std::move(mount));
             }
         }
@@ -276,6 +282,113 @@ void FileBrowser::openFatxImage(const QUrl& file) {
     Q_UNUSED(file);
     setError(tr("This build has no FATX support"));
 #endif
+}
+
+int FileBrowser::indexOfRuntime(const MountRuntime* runtime) const {
+    for (int i = 0; i < m_mounts->count(); ++i) {
+        if (m_mounts->at(i).runtime.get() == runtime)
+            return i;
+    }
+    return -1;
+}
+
+// After a place's filesystem was replaced or changed as a whole.
+void FileBrowser::runtimeReplaced(int index) {
+    m_mounts->changed(index);
+    if (index == currentMount()) {
+        navigate(m_mounts->at(index).currentPath, m_selectedName);
+        emit selectionChanged();
+        emit stateChanged();
+    }
+}
+
+void FileBrowser::setMountWritable(int index, bool writable) {
+    if (index < 0 || index >= m_mounts->count())
+        return;
+    Mount& mount = m_mounts->at(index);
+    if (!mount.reopen || mount.busy || mount.writable == writable)
+        return;
+    // Nothing may run on the old filesystem while the new one opens.
+    const auto old = mount.runtime;
+    m_jobs->cancelAllFor(old.get());
+    old->pool.clear();
+    old->pool.waitForDone();
+    mount.busy = true;
+    m_mounts->changed(index);
+
+    const QString name = mount.name;
+    auto reopen = mount.reopen;
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    const int id = m_jobs->add(writable ? tr("Enable writing to %1").arg(name) : tr("Make %1 read-only").arg(name),
+                               this, cancel);
+    m_openPool.start([this, id, old, reopen, writable] {
+        auto opened = std::make_shared<core::Result<std::unique_ptr<core::FileSystem>>>(reopen(writable));
+        QMetaObject::invokeMethod(
+            this,
+            [this, id, old, opened, writable] {
+                const int i = indexOfRuntime(old.get());
+                if (i < 0) { // closed meanwhile
+                    m_jobs->finish(id, JobModel::Cancelled, {});
+                    return;
+                }
+                Mount& m = m_mounts->at(i);
+                m.busy = false;
+                if (!*opened) {
+                    m_jobs->finish(id, JobModel::Failed, QString::fromStdString(opened->status().message));
+                    setError(QString::fromStdString(opened->status().message));
+                    m_mounts->changed(i);
+                    return;
+                }
+                m.runtime = std::make_shared<MountRuntime>(std::move(opened->value()));
+                m.writable = writable;
+                m_jobs->finish(id, JobModel::Succeeded, {});
+                emit notice(writable ? tr("%1 is writable").arg(m.name) : tr("%1 is read-only").arg(m.name));
+                runtimeReplaced(i);
+            },
+            Qt::QueuedConnection);
+    });
+}
+
+void FileBrowser::repairMount(int index) {
+    if (index < 0 || index >= m_mounts->count())
+        return;
+    const auto rt = m_mounts->at(index).runtime;
+    if (!core::hasCapability(rt->capabilities, core::Capability::Repair))
+        return;
+    const QString name = m_mounts->at(index).name;
+    auto report = std::make_shared<std::string>();
+    runJob(tr("Repair %1").arg(name), rt,
+           [report](core::FileSystem& fs, const JobContext&) { return fs.repair(*report); },
+           [this, rt, name, report](const core::Status& st) {
+               if (st)
+                   emit reportReady(tr("Repair: %1").arg(name), QString::fromStdString(*report));
+               else
+                   setError(QString::fromStdString(st.message));
+               if (const int i = indexOfRuntime(rt.get()); i >= 0)
+                   runtimeReplaced(i);
+           });
+}
+
+void FileBrowser::formatMount(int index, const QString& label) {
+    if (index < 0 || index >= m_mounts->count())
+        return;
+    const auto rt = m_mounts->at(index).runtime;
+    if (!core::hasCapability(rt->capabilities, core::Capability::Format) || !m_mounts->at(index).writable)
+        return;
+    const QString name = m_mounts->at(index).name;
+    const std::string newLabel = label.trimmed().toStdString();
+    runJob(tr("Format %1").arg(name), rt,
+           [newLabel](core::FileSystem& fs, const JobContext&) { return fs.format(newLabel); },
+           [this, rt, name](const core::Status& st) {
+               if (st)
+                   emit notice(tr("Formatted %1").arg(name));
+               else
+                   setError(QString::fromStdString(st.message));
+               if (const int i = indexOfRuntime(rt.get()); i >= 0) {
+                   m_mounts->at(i).currentPath = QStringLiteral("/");
+                   runtimeReplaced(i);
+               }
+           });
 }
 
 void FileBrowser::checkMount(int index) {

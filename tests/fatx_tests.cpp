@@ -36,6 +36,14 @@ fs::path scratch;
 
 std::string quoted(const std::string& s) { return "'" + s + "'"; }
 
+bool haveTool() {
+#ifdef FATX_TOOL
+    return true;
+#else
+    return false;
+#endif
+}
+
 // Runs the fatx tool ("--as mkfs", ...); returns its exit code and output.
 int runTool(const std::string& args, std::string* output = nullptr) {
 #ifdef FATX_TOOL
@@ -56,6 +64,8 @@ int runTool(const std::string& args, std::string* output = nullptr) {
 
 // Number of problems fsck.fatx reports (questions it would ask), -1 on failure.
 int fsckProblems(const fs::path& image, const std::string& layout = "--table file") {
+    if (!haveTool())
+        return 0; // the library's own fsck is used too (see clean())
     std::string out;
     if (runTool("--as fsck -n " + layout + " " + quoted(image.string()), &out) != 0)
         return -1;
@@ -164,7 +174,7 @@ void readImageMadeByTheTools() {
         std::cerr << error << "\n" << out;
         return;
     }
-    CHECK(!hasCapability(fsys->capabilities(), Capability::Inject)); // read-only in this milestone step
+    CHECK(!hasCapability(fsys->capabilities(), Capability::Inject)); // the registry opens read-only
     CHECK(hasCapability(fsys->capabilities(), Capability::Extract));
 
     std::vector<Entry> root;
@@ -292,20 +302,371 @@ void damagedImages() {
     }
 }
 
+// --- writing (library only, plus fsck.fatx when the tool is there) -------------
+
+std::shared_ptr<BlockDevice> newImage(const std::string& name, std::uint64_t size, std::string label = "TEST") {
+    const fs::path p = sparseFile(name, size);
+    auto dev = openImageFile(p, true);
+    if (!dev)
+        return nullptr;
+    FatxPartition plain; // "file" table, x2
+    if (!formatFatx(dev.value(), plain, label))
+        return nullptr;
+    return dev.value();
+}
+
+std::unique_ptr<FileSystem> openOn(const std::shared_ptr<BlockDevice>& dev, bool writable) {
+    const auto parts = probeFatx(dev);
+    if (parts.empty())
+        return nullptr;
+    auto f = openFatx(dev, parts.front(), writable, "test");
+    return f ? std::move(f.value()) : nullptr;
+}
+
+// Health check by the library (fsck dry run) and, when built, by fsck.fatx.
+bool clean(const std::shared_ptr<BlockDevice>& dev, const fs::path& image) {
+    auto ro = openOn(dev, false);
+    std::string report;
+    if (!ro || !ro->healthCheck(report))
+        return false;
+    if (report != "No problems found.") {
+        std::cerr << report << "\n";
+        return false;
+    }
+    return fsckProblems(image) == 0;
+}
+
+void makeHostTree(const fs::path& root) {
+    fs::remove_all(root);
+    fs::create_directories(root / "Content" / "0000000000000000" / "FFFE07D1");
+    fs::create_directories(root / "Empty folder");
+    const std::size_t sizes[] = {0, 1, 2047, 2048, 2049, 16384, 100000, 3 * 1024 * 1024 + 5};
+    unsigned seed = 10;
+    for (std::size_t n : sizes)
+        writeFile(root / ("file" + std::to_string(n) + ".bin"), randomData(n, seed++));
+    writeFile(root / "Content" / "0000000000000000" / "FFFE07D1" / "{braces} & spaces.dat", randomData(70000, 99));
+}
+
+bool sameTree(const fs::path& a, const fs::path& b) {
+    std::size_t count = 0;
+    for (const auto& e : fs::recursive_directory_iterator(a)) {
+        ++count;
+        const fs::path other = b / fs::relative(e.path(), a);
+        if (e.is_directory() ? !fs::is_directory(other) : readHostFile(e.path()) != readHostFile(other)) {
+            std::cerr << "differs: " << other << "\n";
+            return false;
+        }
+    }
+    std::size_t countB = 0;
+    for ([[maybe_unused]] const auto& e : fs::recursive_directory_iterator(b))
+        ++countB;
+    return count == countB;
+}
+
+// Inject a host tree (copyTree host -> FATX), read it back after reopening.
+void writeRoundTrip() {
+    const fs::path image = scratch / "rw.img";
+    auto dev = newImage("rw.img", 64ull << 20);
+    CHECK(dev);
+    if (!dev)
+        return;
+    auto fsys = openOn(dev, true);
+    CHECK(fsys);
+    if (!fsys)
+        return;
+    for (auto cap : {Capability::Inject, Capability::Replace, Capability::Remove, Capability::MakeDirectory,
+                     Capability::Rename, Capability::Clear, Capability::Repair, Capability::Format})
+        CHECK(hasCapability(fsys->capabilities(), cap));
+
+    makeHostTree(scratch / "tree");
+    LocalFileSystem host(scratch);
+    CHECK(copyTree(host, "/tree", *fsys, "/tree"));
+    CHECK(fsys->makeDirectory("/tree/New Folder"));
+    CHECK(!fsys->makeDirectory("/tree/new folder")); // case-insensitive duplicate
+    CHECK(fsys->rename("/tree/file1.bin", "one.bin"));
+    CHECK(fsys->rename("/tree/one.bin", "One.bin")); // case-only rename
+    fs::rename(scratch / "tree" / "file1.bin", scratch / "tree" / "One.bin");
+    fs::create_directories(scratch / "tree" / "New Folder");
+
+    // a stream of unknown size, written in odd chunks (the file grows as it goes)
+    {
+        auto sink = fsys->openWrite("/tree/stream.bin", std::nullopt, false);
+        CHECK(sink);
+        const auto data = randomData(123457, 7);
+        for (std::size_t off = 0; sink && off < data.size(); off += 1000)
+            CHECK(sink.value()->write(data.data() + off, std::min<std::size_t>(1000, data.size() - off)));
+        CHECK(sink && sink.value()->finish());
+        writeFile(scratch / "tree" / "stream.bin", data);
+    }
+    // a size hint larger than the data (truncated in finish) and smaller (grows)
+    {
+        const auto data = randomData(5000, 8);
+        auto sink = fsys->openWrite("/tree/hint-large.bin", 100000, false);
+        CHECK(sink && sink.value()->write(data.data(), data.size()) && sink.value()->finish());
+        writeFile(scratch / "tree" / "hint-large.bin", data);
+        auto sink2 = fsys->openWrite("/tree/hint-small.bin", 10, false);
+        CHECK(sink2 && sink2.value()->write(data.data(), data.size()) && sink2.value()->finish());
+        writeFile(scratch / "tree" / "hint-small.bin", data);
+    }
+    // replace with a different size
+    {
+        const auto data = randomData(40000, 9);
+        writeFile(scratch / "src.bin", data);
+        CHECK(!copyTree(host, "/src.bin", *fsys, "/tree/file100000.bin")); // exists
+        TransferOptions replace;
+        replace.overwrite = true;
+        CHECK(copyTree(host, "/src.bin", *fsys, "/tree/file100000.bin", replace));
+        writeFile(scratch / "tree" / "file100000.bin", data);
+    }
+    fsys.reset();
+    CHECK(clean(dev, image));
+
+    // read everything back from a fresh read-only open
+    auto ro = openOn(dev, false);
+    CHECK(ro);
+    if (!ro)
+        return;
+    fs::remove_all(scratch / "back");
+    fs::create_directories(scratch / "back");
+    LocalFileSystem back(scratch / "back");
+    CHECK(copyTree(*ro, "/tree", back, "/tree"));
+    CHECK(sameTree(scratch / "tree", scratch / "back" / "tree"));
+
+    // delete a whole tree, clear a folder
+    ro.reset();
+    fsys = openOn(dev, true);
+    CHECK(fsys->remove("/tree/Content"));
+    CHECK(fsys->clear("/tree"));
+    std::vector<Entry> entries;
+    CHECK(fsys->list("/tree", entries) && entries.empty());
+    CHECK(fsys->list("/", entries) && entries.size() == 2); // name.txt + tree
+    CHECK(!fsys->remove("/name.txt"));
+    fsys.reset();
+    CHECK(clean(dev, image));
+}
+
+// Nothing is visible before finish(); a dropped sink leaves nothing behind.
+void atomicWrites() {
+    const fs::path image = scratch / "atomic.img";
+    auto dev = newImage("atomic.img", 16ull << 20);
+    auto fsys = dev ? openOn(dev, true) : nullptr;
+    CHECK(fsys);
+    if (!fsys)
+        return;
+    const auto data = randomData(50000, 1);
+    Entry e;
+    std::vector<Entry> entries;
+    {
+        auto sink = fsys->openWrite("/game.xex", data.size(), false);
+        CHECK(sink && sink.value()->write(data.data(), 20000));
+        CHECK(!fsys->stat("/game.xex", e)); // not there yet
+    } // dropped: discarded
+    CHECK(!fsys->stat("/game.xex", e));
+    CHECK(fsys->list("/", entries) && entries.size() == 1); // only name.txt: no temporary file left
+    {
+        auto keep = fsys->openWrite("/game.xex", data.size(), false);
+        CHECK(keep && keep.value()->write(data.data(), data.size()) && keep.value()->finish());
+        // replacing: the old contents stay until finish()
+        auto sink = fsys->openWrite("/game.xex", 10, true);
+        CHECK(sink && sink.value()->write("0123456789", 10));
+        CHECK(fsys->stat("/game.xex", e) && e.size == data.size());
+    }
+    CHECK(fsys->stat("/game.xex", e) && e.size == data.size());
+    CHECK(readAll(*fsys, "/game.xex") == data);
+    fsys.reset();
+    CHECK(clean(dev, image));
+
+    // read-only filesystems refuse writes
+    auto ro = openOn(dev, false);
+    CHECK(ro && !hasCapability(ro->capabilities(), Capability::Inject));
+    auto refused = ro->openWrite("/x", 1, false);
+    CHECK(!refused && refused.status().message.find("read-only") != std::string::npos);
+    CHECK(!ro->makeDirectory("/x"));
+}
+
+// FATX name rules and other errors come back as clear messages.
+void namesAndErrors() {
+    auto dev = newImage("names.img", 16ull << 20);
+    auto fsys = dev ? openOn(dev, true) : nullptr;
+    CHECK(fsys);
+    if (!fsys)
+        return;
+    auto message = [&](const std::string& name) {
+        const Status st = fsys->makeDirectory("/" + name);
+        return st ? std::string() : st.message;
+    };
+    CHECK(message("ok name (1) [a] {b} ~!#$%&'-.@^_`").empty());
+    CHECK(message("a:b").find("not a valid FATX name") != std::string::npos);
+    CHECK(message("a*b").find("not a valid FATX name") != std::string::npos);
+    CHECK(message("caf\xc3\xa9").find("only ASCII") != std::string::npos);
+    CHECK(message(std::string(43, 'x')).find("at most 42") != std::string::npos);
+    CHECK(message(std::string(42, 'x')).empty());
+    CHECK(message("OK NAME (1) [A] {B} ~!#$%&'-.@^_`").find("upper and lower case") != std::string::npos);
+    CHECK(!fsys->rename("/" + std::string(42, 'x'), "bad/name"));
+    CHECK(!fsys->rename("/", "x"));
+    CHECK(!fsys->remove("/"));
+    CHECK(!fsys->makeDirectory("/missing/child"));
+    auto big = fsys->openWrite("/huge.bin", 5ull << 30, false);
+    CHECK(!big && big.status().message.find("4 GiB") != std::string::npos);
+    auto file = fsys->openWrite("/afile", 1, false);
+    CHECK(file && file.value()->write("x", 1) && file.value()->finish());
+    auto inFile = fsys->openWrite("/afile/sub", 1, false); // a file is not a folder
+    CHECK(!inFile);
+}
+
+// A full partition is reported and leaves the filesystem consistent.
+void noSpaceLeft() {
+    const fs::path image = scratch / "small.img";
+    auto dev = newImage("small.img", 4ull << 20);
+    auto fsys = dev ? openOn(dev, true) : nullptr;
+    CHECK(fsys);
+    if (!fsys)
+        return;
+    const auto data = randomData(6 << 20, 3);
+    writeFile(scratch / "toobig.bin", data);
+    LocalFileSystem host(scratch);
+    const Status st = copyTree(host, "/toobig.bin", *fsys, "/toobig.bin");
+    CHECK(!st && st.message.find("not enough free space") != std::string::npos);
+    // unknown size: fails while writing, the partial file is removed
+    {
+        auto sink = fsys->openWrite("/stream.bin", std::nullopt, false);
+        CHECK(sink);
+        bool failed = false;
+        for (std::size_t off = 0; sink && off < data.size() && !failed; off += 65536)
+            failed = !sink.value()->write(data.data() + off, 65536);
+        CHECK(failed);
+    }
+    std::vector<Entry> entries;
+    CHECK(fsys->list("/", entries) && entries.size() == 1);
+    fsys.reset();
+    CHECK(clean(dev, image));
+}
+
+// Format and repair through the FileSystem interface.
+void formatAndRepair() {
+    const fs::path image = scratch / "fmt.img";
+    auto dev = newImage("fmt.img", 32ull << 20, "OLD");
+    auto fsys = dev ? openOn(dev, true) : nullptr;
+    CHECK(fsys);
+    if (!fsys)
+        return;
+    CHECK(fsys->makeDirectory("/dir"));
+    CHECK(fsys->format("NEW LABEL"));
+    std::vector<Entry> entries;
+    CHECK(fsys->list("/", entries) && entries.size() == 1 && entries[0].name == "name.txt");
+    Details d;
+    CHECK(fsys->describeFileSystem(d) && details(d, "Label") == "NEW LABEL");
+    CHECK(!fsys->format(std::string(43, 'x')));
+    CHECK(fsys->makeDirectory("/after"));
+    fsys.reset();
+    CHECK(clean(dev, image));
+
+    // a lost cluster chain, written behind the library's back
+    {
+        auto ro = openOn(dev, false);
+        CHECK(ro->describeFileSystem(d));
+    }
+    const std::uint64_t fatOffset = std::stoull(details(d, "FAT offset"), nullptr, 16);
+    const unsigned char eoc[2] = {0xFF, 0xFF}; // 16-bit FAT on a 32 MiB partition
+    CHECK(dev->writeAt(fatOffset + 300 * 2, eoc, 2) && dev->flush());
+    fsys = openOn(dev, true);
+    std::string report;
+    CHECK(fsys->healthCheck(report) && report.rfind("1 problem found.", 0) == 0);
+    CHECK(fsys->repair(report) && report.rfind("1 problem found and repaired.", 0) == 0);
+    CHECK(fsys->healthCheck(report) && report == "No problems found.");
+    CHECK(fsys->makeDirectory("/still works"));
+    fsys.reset();
+    CHECK(clean(dev, image));
+
+    // a read-only filesystem neither repairs nor formats
+    auto ro = openOn(dev, false);
+    CHECK(!ro->repair(report) && !ro->format("X"));
+}
+
+// Damaged images: errors, no crash (run under ASan/UBSan in CI).
+void corruptedImagesDoNotCrash() {
+    auto dev = newImage("fuzz-src.img", 4ull << 20);
+    auto fsys = dev ? openOn(dev, true) : nullptr;
+    CHECK(fsys);
+    if (!fsys)
+        return;
+    CHECK(fsys->makeDirectory("/a"));
+    for (int i = 0; i < 6; ++i) {
+        auto sink = fsys->openWrite("/a/f" + std::to_string(i), 5000u * unsigned(i), false);
+        const auto data = randomData(5000u * unsigned(i), unsigned(i));
+        CHECK(sink && (data.empty() || sink.value()->write(data.data(), data.size())) && sink.value()->finish());
+    }
+    fsys.reset();
+    const auto pristine = readHostFile(scratch / "fuzz-src.img");
+    std::mt19937 gen(77);
+    for (int round = 0; round < 60; ++round) {
+        auto bytes = pristine;
+        for (int i = 0; i < 8; ++i)
+            bytes[gen() % (128 * 1024)] = static_cast<char>(gen());
+        writeFile(scratch / "fuzz.img", bytes);
+        auto d = openImageFile(scratch / "fuzz.img", true);
+        if (!d)
+            continue;
+        auto f = openOn(d.value(), true);
+        if (!f)
+            continue;
+        std::vector<Entry> entries;
+        if (f->list("/a", entries))
+            for (const auto& e : entries)
+                readAll(*f, "/a/" + e.name);
+        std::string report;
+        void(f->healthCheck(report));
+        void(f->makeDirectory("/new"));
+        void(f->remove("/a/f1"));
+    }
+}
+
+// The library writes into an image made by mkfs.fatx; fsck.fatx agrees.
+void writeIntoImageMadeByTheTools() {
+    const fs::path image = sparseFile("tool-rw.img", 48ull << 20);
+    CHECK(runTool("--as mkfs -y --table file " + quoted(image.string()) + " -l TOOLS") == 0);
+    auto dev = openImageFile(image, true);
+    CHECK(dev);
+    auto fsys = dev ? openOn(dev.value(), true) : nullptr;
+    CHECK(fsys);
+    if (!fsys)
+        return;
+    makeHostTree(scratch / "tree2");
+    LocalFileSystem host(scratch);
+    CHECK(copyTree(host, "/tree2", *fsys, "/tree2"));
+    fsys.reset();
+    CHECK(fsckProblems(image) == 0);
+    // the tool reads back what the library wrote
+    std::string out;
+    CHECK(runTool("--as label --table file " + quoted(image.string()) + " --do \"lcp,/tree2/file100000.bin," +
+                  (scratch / "lcp.bin").string() + "\"", &out) == 0);
+    CHECK(readHostFile(scratch / "lcp.bin") == readHostFile(scratch / "tree2" / "file100000.bin"));
+}
+
 } // namespace
 
 int main() {
-#ifndef FATX_TOOL
-    std::cout << "SKIPPED: the fatx command-line tool was not built (needs Boost.Program_options)\n";
-    return 77;
-#else
     scratch = fs::temp_directory_path() / "unnamed_fatx_tests";
     fs::remove_all(scratch);
     fs::create_directories(scratch);
 
-    readImageMadeByTheTools();
-    wholeDiskImage();
-    damagedImages();
+    // need only the library
+    writeRoundTrip();
+    atomicWrites();
+    namesAndErrors();
+    noSpaceLeft();
+    formatAndRepair();
+    corruptedImagesDoNotCrash();
+
+    // need the fatx command-line tool (mkfs.fatx, fsck.fatx, label.fatx)
+    if (haveTool()) {
+        readImageMadeByTheTools();
+        wholeDiskImage();
+        damagedImages();
+        writeIntoImageMadeByTheTools();
+    } else {
+        std::cout << "SKIPPED (fatx tool not built, needs Boost.Program_options): tests against mkfs.fatx/fsck.fatx\n";
+    }
 
     fs::remove_all(scratch);
     if (failures)
@@ -313,5 +674,4 @@ int main() {
     else
         std::cout << "All FATX tests passed\n";
     return failures ? 1 : 0;
-#endif
 }

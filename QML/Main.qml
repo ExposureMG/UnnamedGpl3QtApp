@@ -107,6 +107,84 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    // Writing to a place needs an explicit unlock.
+    Kirigami.PromptDialog {
+        id: unlockDialog
+        property int row: -1
+        property string placeName: ""
+        property string device: ""
+        property bool isDrive: false
+        title: qsTr("Enable Writing")
+        preferredWidth: Kirigami.Units.gridUnit * 26
+        subtitle: (isDrive
+                   ? qsTr("Enable writing to “%1” on the drive %2? Changes are written to the drive immediately. A mistake can make the console's drive unusable: make a backup image first.")
+                   : qsTr("Enable writing to “%1”? Changes are written to %2 immediately; keep a copy of the image if it matters."))
+                  .arg(placeName).arg(device)
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Ok | Kirigami.Dialog.Cancel
+        onAccepted: FileBrowser.setMountWritable(row, true)
+    }
+
+    // Formatting erases a whole partition: type the place's name to confirm.
+    Kirigami.Dialog {
+        id: formatDialog
+        objectName: "formatDialog"
+        property int row: -1
+        property string placeName: ""
+        property string device: ""
+        property bool isDrive: false
+        title: qsTr("Format")
+        padding: Kirigami.Units.largeSpacing
+        preferredWidth: Kirigami.Units.gridUnit * 26
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [
+            Kirigami.Action {
+                text: qsTr("Format")
+                icon.name: "edit-delete-shred"
+                enabled: formatConfirm.text === formatDialog.placeName
+                onTriggered: {
+                    FileBrowser.formatMount(formatDialog.row, formatLabel.text);
+                    formatDialog.close();
+                }
+            }
+        ]
+        onOpened: formatConfirm.forceActiveFocus()
+
+        ColumnLayout {
+            spacing: Kirigami.Units.largeSpacing
+
+            Kirigami.InlineMessage {
+                Layout.fillWidth: true
+                visible: true
+                type: Kirigami.MessageType.Error
+                text: (formatDialog.isDrive
+                       ? qsTr("Everything in “%1” on the drive %2 will be erased. This cannot be undone.")
+                       : qsTr("Everything in “%1” (%2) will be erased. This cannot be undone."))
+                      .arg(formatDialog.placeName).arg(formatDialog.device)
+            }
+            QQC2.Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: qsTr("Type the name of the place to confirm: %1").arg(formatDialog.placeName)
+            }
+            QQC2.TextField {
+                id: formatConfirm
+                objectName: "formatConfirm"
+                Layout.fillWidth: true
+                placeholderText: formatDialog.placeName
+            }
+            QQC2.Label {
+                text: qsTr("New label")
+            }
+            QQC2.TextField {
+                id: formatLabel
+                Layout.fillWidth: true
+                maximumLength: 42
+                text: "XBOX"
+            }
+        }
+    }
+
     Kirigami.PromptDialog {
         id: globalErrorDialog
         title: qsTr("Error")
@@ -143,6 +221,24 @@ Kirigami.ApplicationWindow {
 
     function openFatxDialog() {
         fatxDialog.open();
+    }
+
+    function confirmUnlock(row, name, device, isDrive) {
+        unlockDialog.row = row;
+        unlockDialog.placeName = name;
+        unlockDialog.device = device;
+        unlockDialog.isDrive = isDrive;
+        unlockDialog.open();
+    }
+
+    function confirmFormat(row, name, device, isDrive) {
+        formatDialog.row = row;
+        formatDialog.placeName = name;
+        formatDialog.device = device;
+        formatDialog.isDrive = isDrive;
+        formatConfirm.text = "";
+        formatLabel.text = "XBOX";
+        formatDialog.open();
     }
 
     // The expanded view is a second page in the page row (side by side when

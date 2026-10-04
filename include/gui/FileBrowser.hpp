@@ -118,6 +118,13 @@ public:
     Q_INVOKABLE void refresh();
     // Filesystem health check of a place (read-only); the result arrives as reportReady().
     Q_INVOKABLE void checkMount(int index);
+    // Places open read-only; writing needs this explicit unlock (the place is
+    // opened again, writable or read-only).
+    Q_INVOKABLE void setMountWritable(int index, bool writable);
+    // Repairs a writable place (fsck with default answers); reportReady() gives the result.
+    Q_INVOKABLE void repairMount(int index);
+    // Erases a writable place and creates an empty filesystem labelled `label`.
+    Q_INVOKABLE void formatMount(int index, const QString& label);
 
 signals:
     void stateChanged();
@@ -145,6 +152,8 @@ private:
     QString selectedPath() const;
     void addMount(const QString& kind, const QString& hostPath, const QString& name);
     void insertMount(Mount mount);
+    int indexOfRuntime(const MountRuntime* runtime) const;
+    void runtimeReplaced(int index);
     void navigate(const QString& path, const QString& selectAfter = {});
     void setLoading(bool loading);
     void setSelectedName(const QString& name);
