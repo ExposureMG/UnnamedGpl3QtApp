@@ -4,8 +4,8 @@ import QtQuick.Controls as QQC2
 import org.kde.kirigami as Kirigami
 import org.exposuremg.unnamed
 
-// Picks a physical drive to open. Drives open read-only; writing needs an
-// explicit "Enable Writing" on the place afterwards.
+// Picks a physical drive to open. Drives open read-write when possible and
+// read-only otherwise (FileBrowser reports why); places can switch either way.
 Kirigami.Dialog {
     id: root
     objectName: "drivesDialog"
@@ -19,7 +19,7 @@ Kirigami.Dialog {
     standardButtons: Kirigami.Dialog.Cancel
     customFooterActions: [
         Kirigami.Action {
-            text: qsTr("Open Read-only")
+            text: qsTr("Open")
             icon.name: "document-open"
             enabled: root.selectedPath !== ""
             onTriggered: {
@@ -42,7 +42,7 @@ Kirigami.Dialog {
             Layout.margins: Kirigami.Units.smallSpacing
             visible: true
             type: Kirigami.MessageType.Information
-            text: qsTr("Drives open read-only. To change one, choose Enable Writing on its place. Drives you cannot read yet ask for permission when opened.")
+            text: qsTr("Drives open for reading and writing when possible; a drive that is mounted, read-only or not allowed opens read-only and says why. Use Make Read-only on a place to protect it. Drives you cannot open yet ask for permission.")
         }
 
         RowLayout {

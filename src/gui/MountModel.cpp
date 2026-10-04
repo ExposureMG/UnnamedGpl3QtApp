@@ -61,7 +61,7 @@ QVariant MountModel::data(const QModelIndex& index, int role) const {
     case SubtitleRole: {
         QString text = !m.subtitle.isEmpty() ? m.subtitle : m.hostPath.isEmpty() ? m.kind : m.hostPath;
         if (m.reopen) // can be unlocked: say which way it is open
-            text += m.writable ? tr(" · writable") : tr(" · read-only");
+            text += m.writable ? tr(" · read-write") : tr(" · read-only");
         return text;
     }
     case IsCurrentRole: return index.row() == m_current;

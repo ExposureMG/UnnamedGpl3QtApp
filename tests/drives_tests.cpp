@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <random>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -131,6 +132,19 @@ void deviceNodeOnImage(const fs::path& root) {
     auto again = openDrive(image.string(), true); // shared while in use
     CHECK(again && again.value() == rw.value());
 
+    // drives open read-write when they can, read-only with the reason otherwise
+    auto used = openDriveForUse(image.string());
+    CHECK(used && used.value().writable && used.value().readOnlyReason.empty());
+    auto refused = openDriveForUse(image.string(), [](const std::string& p, bool writable)
+                                                       -> Result<std::shared_ptr<BlockDevice>> {
+        if (writable)
+            return Status::failure("Cannot open " + p + " for writing: it is in use (mounted?)");
+        return openDeviceNode(p, false);
+    });
+    CHECK(refused && !refused.value().writable && !refused.value().device->writable());
+    CHECK(refused && refused.value().readOnlyReason.find("in use") != std::string::npos);
+    CHECK(!openDriveForUse((root / "missing").string()));
+
     auto missing = openDrive((root / "missing").string(), false);
     CHECK(!missing && missing.status().message.find("direct:") != std::string::npos);
     CHECK(!deviceFromDescriptor(-1, "bad", false));
@@ -142,7 +156,7 @@ void deviceNodeOnImage(const fs::path& root) {
 } // namespace
 
 int main() {
-    const fs::path root = fs::temp_directory_path() / "unnamed_drives_tests";
+    const fs::path root = fs::temp_directory_path() / ("unnamed_drives_tests-" + std::to_string(std::random_device{}()));
     fs::remove_all(root);
     fs::create_directories(root);
     listingFromFakeSysfs(root);

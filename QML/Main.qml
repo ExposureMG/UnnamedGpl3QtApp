@@ -121,13 +121,25 @@ Kirigami.ApplicationWindow {
         property bool isDrive: false
         title: qsTr("Enable Writing")
         preferredWidth: Kirigami.Units.gridUnit * 26
-        subtitle: (isDrive
-                   ? qsTr("Enable writing to “%1” on the drive %2? Changes are written to the drive immediately. A mistake can make the console's drive unusable: make a backup image first.")
-                   : qsTr("Enable writing to “%1”? Changes are written to %2 immediately; keep a copy of the image if it matters."))
+        subtitle: qsTr("Enable writing to “%1”? Changes are written to %2 immediately; keep a copy of the image if it matters.")
                   .arg(placeName).arg(device)
         dialogType: Kirigami.PromptDialog.Warning
         standardButtons: Kirigami.Dialog.Ok | Kirigami.Dialog.Cancel
         onAccepted: FileBrowser.setMountWritable(row, true)
+    }
+
+    // Repair writes fsck's fixes to the filesystem.
+    Kirigami.PromptDialog {
+        id: repairDialog
+        property int row: -1
+        property string placeName: ""
+        property string device: ""
+        title: qsTr("Repair Filesystem")
+        subtitle: qsTr("Repair “%1” on %2? The health check's fixes are written immediately; files in damaged areas may be cut short or removed.")
+                  .arg(placeName).arg(device)
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Ok | Kirigami.Dialog.Cancel
+        onAccepted: FileBrowser.repairMount(row)
     }
 
     // Formatting erases a whole partition: type the place's name to confirm.
@@ -238,6 +250,13 @@ Kirigami.ApplicationWindow {
         unlockDialog.device = device;
         unlockDialog.isDrive = isDrive;
         unlockDialog.open();
+    }
+
+    function confirmRepair(row, name, device) {
+        repairDialog.row = row;
+        repairDialog.placeName = name;
+        repairDialog.device = device;
+        repairDialog.open();
     }
 
     function confirmFormat(row, name, device, isDrive) {

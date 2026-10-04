@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -70,5 +71,17 @@ std::vector<std::unique_ptr<DriveAccess>> driveAccessMethods();
 // second exclusive open would fail, e.g. for another partition of the drive);
 // BlockDevice reads and writes at an offset, so places may share it.
 Result<std::shared_ptr<BlockDevice>> openDrive(const std::string& path, bool writable);
+
+// A drive opened for use: writable when possible (exclusive open), otherwise
+// read-only with the reason (mounted, read-only device, permission refused).
+struct OpenedDrive {
+    std::shared_ptr<BlockDevice> device;
+    bool writable = false;
+    std::string readOnlyReason; // why writing was refused, when !writable
+};
+using DriveOpener = std::function<Result<std::shared_ptr<BlockDevice>>(const std::string& path, bool writable)>;
+// Drives open read-write by default (images stay read-only): tries a writable
+// open, then falls back to read-only. `open` defaults to openDrive().
+Result<OpenedDrive> openDriveForUse(const std::string& path, const DriveOpener& open = {});
 
 } // namespace unnamed::core

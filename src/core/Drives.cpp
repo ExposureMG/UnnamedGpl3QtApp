@@ -237,6 +237,12 @@ Result<std::shared_ptr<BlockDevice>> deviceFromDescriptor(int fd, std::string de
     std::uint64_t size = 0;
     if (S_ISBLK(st.st_mode)) {
 #ifdef __linux__
+        // open() for writing succeeds on a read-only device; writes would fail later
+        int readOnly = 0;
+        if (writable && ::ioctl(fd, BLKROGET, &readOnly) == 0 && readOnly) {
+            ::close(fd);
+            return Status::failure("Cannot open " + description + " for writing: the device is read-only");
+        }
         if (::ioctl(fd, BLKGETSIZE64, &size) != 0)
             size = 0;
 #endif
@@ -309,6 +315,23 @@ Result<std::shared_ptr<BlockDevice>> openDrive(const std::string& path, bool wri
         errors += (errors.empty() ? "" : "; ") + method->name() + ": " + dev.status().message;
     }
     return Status::failure(errors.empty() ? "Cannot open " + path : errors);
+}
+
+Result<OpenedDrive> openDriveForUse(const std::string& path, const DriveOpener& open) {
+    const DriveOpener opener = open ? open : DriveOpener([](const std::string& p, bool w) { return openDrive(p, w); });
+    OpenedDrive out;
+    auto rw = opener(path, true);
+    if (rw) {
+        out.device = rw.value();
+        out.writable = true;
+        return out;
+    }
+    auto ro = opener(path, false);
+    if (!ro)
+        return ro.status();
+    out.device = ro.value();
+    out.readOnlyReason = rw.status().message;
+    return out;
 }
 
 } // namespace unnamed::core

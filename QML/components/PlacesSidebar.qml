@@ -49,11 +49,32 @@ ColumnLayout {
 
             width: ListView.view.width
             highlighted: isCurrent
-            contentItem: Kirigami.IconTitleSubtitle {
-                icon.name: place.kind === "Local" ? "folder" : place.kind === "Demo" ? "applications-development" : place.isDrive ? "drive-removable-media" : "drive-harddisk"
-                title: place.name
-                subtitle: place.busy ? qsTr("Opening…") : place.subtitle
-                selected: place.highlighted
+            contentItem: RowLayout {
+                spacing: Kirigami.Units.smallSpacing
+
+                Kirigami.IconTitleSubtitle {
+                    Layout.fillWidth: true
+                    icon.name: place.kind === "Local" ? "folder" : place.kind === "Demo" ? "applications-development" : place.isDrive ? "drive-removable-media" : "drive-harddisk"
+                    title: place.name
+                    subtitle: place.busy ? qsTr("Opening…") : place.subtitle
+                    selected: place.highlighted
+                }
+                // read-write / read-only badge for places that can switch
+                Kirigami.Icon {
+                    Layout.fillWidth: false
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                    visible: place.canUnlock
+                    source: place.writable ? "document-edit" : "object-locked"
+                    color: place.highlighted ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
+
+                    QQC2.ToolTip.text: place.writable ? qsTr("Read-write") : qsTr("Read-only")
+                    QQC2.ToolTip.visible: badgeHover.hovered
+                    QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                    HoverHandler {
+                        id: badgeHover
+                    }
+                }
             }
             onClicked: {
                 FileBrowser.selectMount(place.index);
@@ -111,18 +132,20 @@ ColumnLayout {
             icon.name: "tools-wizard"
             visible: placeMenu.place !== null && placeMenu.place.canRepair
             height: visible ? implicitHeight : 0
-            onTriggered: FileBrowser.repairMount(placeMenu.row)
+            onTriggered: applicationWindow().confirmRepair(placeMenu.row, placeMenu.place.name, placeMenu.place.hostPath)
         }
         QQC2.MenuSeparator {
             visible: placeMenu.place !== null && placeMenu.place.canUnlock
             height: visible ? implicitHeight : 0
         }
         QQC2.MenuItem {
-            text: qsTr("Enable Writing…")
+            text: placeMenu.place !== null && placeMenu.place.isDrive ? qsTr("Enable Writing") : qsTr("Enable Writing…")
             icon.name: "object-unlocked"
             visible: placeMenu.place !== null && placeMenu.place.canUnlock && !placeMenu.place.writable
             height: visible ? implicitHeight : 0
-            onTriggered: applicationWindow().confirmUnlock(placeMenu.row, placeMenu.place.name, placeMenu.place.hostPath, placeMenu.place.isDrive)
+            // drives switch directly (they open read-write by default); images ask first
+            onTriggered: placeMenu.place.isDrive ? FileBrowser.setMountWritable(placeMenu.row, true)
+                                                 : applicationWindow().confirmUnlock(placeMenu.row, placeMenu.place.name, placeMenu.place.hostPath, false)
         }
         QQC2.MenuItem {
             text: qsTr("Make Read-only")

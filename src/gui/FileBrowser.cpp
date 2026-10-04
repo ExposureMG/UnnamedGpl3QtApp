@@ -255,12 +255,28 @@ void FileBrowser::openFatxDevice(const QString& hostPath, const QString& display
     struct Opened {
         std::vector<Mount> mounts;
         QString error;
+        QString readOnlyReason; // a drive that could only be opened read-only
     };
     auto result = std::make_shared<Opened>();
     auto cancel = std::make_shared<std::atomic_bool>(false);
     const int id = m_jobs->add(tr("Open %1").arg(displayName), this, cancel);
     m_openPool.start([this, id, hostPath, displayName, isDrive, openDevice, result] {
-        auto device = openDevice(false);
+        // Drives open read-write when they can (falling back to read-only with
+        // the reason); images open read-only until "Enable Writing".
+        bool writable = false;
+        core::Result<std::shared_ptr<core::BlockDevice>> device = core::Status::failure("");
+        if (isDrive) {
+            auto opened = core::openDriveForUse(hostPath.toStdString());
+            if (opened) {
+                device = opened.value().device;
+                writable = opened.value().writable;
+                result->readOnlyReason = QString::fromStdString(opened.value().readOnlyReason);
+            } else {
+                device = opened.status();
+            }
+        } else {
+            device = openDevice(false);
+        }
         if (!device) {
             result->error = QString::fromStdString(device.status().message);
         } else {
@@ -271,7 +287,7 @@ void FileBrowser::openFatxDevice(const QString& hostPath, const QString& display
                 const QString partName = QString::fromStdString(p.name);
                 const QString name =
                     partitions.size() == 1 ? displayName : QStringLiteral("%1 – %2").arg(displayName, partName);
-                auto fs = core::openFatx(device.value(), p, false, name.toStdString());
+                auto fs = core::openFatx(device.value(), p, writable, name.toStdString());
                 if (!fs) {
                     result->error = QString::fromStdString(fs.status().message);
                     continue;
@@ -284,6 +300,7 @@ void FileBrowser::openFatxDevice(const QString& hostPath, const QString& display
                 mount.subtitle = isDrive ? tr("FATX drive · %1").arg(partName)
                                          : tr("FATX · %1").arg(partitions.size() == 1 ? displayName : partName);
                 mount.isDrive = isDrive;
+                mount.writable = writable;
                 mount.runtime = std::make_shared<MountRuntime>(std::move(fs.value()));
                 mount.reopen = [openDevice, p, name](bool writable) -> core::Result<std::unique_ptr<core::FileSystem>> {
                     auto dev = openDevice(writable);
@@ -296,12 +313,16 @@ void FileBrowser::openFatxDevice(const QString& hostPath, const QString& display
         }
         QMetaObject::invokeMethod(
             this,
-            [this, id, result] {
+            [this, id, result, displayName] {
                 m_jobs->finish(id, result->mounts.empty() ? JobModel::Failed : JobModel::Succeeded, result->error);
                 for (Mount& m : result->mounts)
                     insertMount(std::move(m));
                 if (!result->error.isEmpty())
                     setError(result->error);
+                else if (!result->readOnlyReason.isEmpty())
+                    emit reportReady(tr("Opened read-only"),
+                                     tr("%1 could not be opened for writing, so it is open read-only.\n\n%2")
+                                         .arg(displayName, result->readOnlyReason));
             },
             Qt::QueuedConnection);
     });
@@ -423,7 +444,7 @@ void FileBrowser::setMountWritable(int index, bool writable) {
                 m.runtime = std::make_shared<MountRuntime>(std::move(opened->value()));
                 m.writable = writable;
                 m_jobs->finish(id, JobModel::Succeeded, {});
-                emit notice(writable ? tr("%1 is writable").arg(m.name) : tr("%1 is read-only").arg(m.name));
+                emit notice(writable ? tr("%1 is read-write").arg(m.name) : tr("%1 is read-only").arg(m.name));
                 runtimeReplaced(i);
             },
             Qt::QueuedConnection);
