@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import org.kde.kirigami as Kirigami
+import org.exposuremg.unnamed
 
 QQC2.ToolBar {
     id: root
@@ -53,6 +54,26 @@ QQC2.ToolBar {
             text: root.pageTitle
             font.bold: true
             elide: Text.ElideRight
+        }
+
+        QQC2.ToolButton {
+            id: transfersButton
+            objectName: "transfersButton"
+            visible: FileBrowser.jobs.count > 0
+            icon.name: "folder-sync"
+            text: FileBrowser.jobs.activeCount > 0 ? String(FileBrowser.jobs.activeCount) : ""
+            display: text === "" ? QQC2.AbstractButton.IconOnly : QQC2.AbstractButton.TextBesideIcon
+            onClicked: jobsPopup.opened ? jobsPopup.close() : jobsPopup.open()
+
+            QQC2.ToolTip.text: qsTr("Transfers")
+            QQC2.ToolTip.visible: hovered
+            QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+
+            JobsPopup {
+                id: jobsPopup
+                x: transfersButton.width - width
+                y: transfersButton.height
+            }
         }
 
         QQC2.ToolButton {

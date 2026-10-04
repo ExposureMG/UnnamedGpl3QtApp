@@ -218,6 +218,14 @@ Kirigami.Page {
                 }
 
                 QQC2.ToolButton {
+                    visible: FileBrowser.canMakeDirectory
+                    action: root.itemActions.newFolder
+                    display: QQC2.AbstractButton.IconOnly
+                    QQC2.ToolTip.text: text
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                }
+                QQC2.ToolButton {
                     visible: FileBrowser.canInject
                     action: root.itemActions.inject
                     display: QQC2.AbstractButton.IconOnly
@@ -241,6 +249,14 @@ Kirigami.Page {
 
             Kirigami.Separator {
                 Layout.fillWidth: true
+            }
+
+            QQC2.ProgressBar {
+                Layout.fillWidth: true
+                Layout.fillHeight: false
+                Layout.preferredHeight: visible ? implicitHeight : 0
+                visible: FileBrowser.loading
+                indeterminate: true
             }
 
             // Content: list / grid / empty states.
@@ -281,7 +297,7 @@ Kirigami.Page {
                 Kirigami.PlaceholderMessage {
                     anchors.centerIn: parent
                     width: parent.width - Kirigami.Units.gridUnit * 4
-                    visible: FileBrowser.isOpen && FileBrowser.model.count === 0
+                    visible: FileBrowser.isOpen && !FileBrowser.loading && FileBrowser.model.count === 0
                     text: FileBrowser.model.totalCount === 0 ? qsTr("This folder is empty") : qsTr("No matches")
                     explanation: FileBrowser.model.totalCount === 0 ? "" : qsTr("Nothing here matches “%1”.").arg(FileBrowser.model.filterText)
                 }
@@ -365,6 +381,9 @@ Kirigami.Page {
         QQC2.MenuSeparator {}
         QQC2.MenuItem {
             action: root.itemActions.extract
+        }
+        QQC2.MenuItem {
+            action: root.itemActions.rename
         }
         QQC2.MenuItem {
             action: root.itemActions.replace

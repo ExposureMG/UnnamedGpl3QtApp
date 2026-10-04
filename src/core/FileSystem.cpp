@@ -10,14 +10,36 @@ Status unsupported(const FileSystem& fs, const char* op) {
 }
 } // namespace
 
-Status FileSystem::extract(const std::string&, const std::filesystem::path&) {
+Status FileSystem::stat(const std::string& path, Entry& out) const {
+    if (path.empty() || path == "/") {
+        out = {};
+        out.type = EntryType::Directory;
+        out.kind = "folder";
+        return Status::success();
+    }
+    std::vector<Entry> siblings;
+    if (const Status st = list(parentPath(path), siblings); !st)
+        return st;
+    const std::string name = path.substr(path.find_last_of('/') + 1);
+    for (const Entry& e : siblings) {
+        if (e.name == name) {
+            out = e;
+            return Status::success();
+        }
+    }
+    return Status::failure("No such file or folder: " + path);
+}
+
+Result<std::unique_ptr<ByteSource>> FileSystem::openRead(const std::string&) const {
     return unsupported(*this, "Extract");
 }
-Status FileSystem::inject(const std::string&, const std::filesystem::path&) {
-    return unsupported(*this, "Inject");
+Result<std::unique_ptr<ByteSink>> FileSystem::openWrite(const std::string&,
+                                                        std::optional<std::uint64_t>, bool) {
+    return unsupported(*this, "Writing files");
 }
-Status FileSystem::replace(const std::string&, const std::filesystem::path&) {
-    return unsupported(*this, "Replace");
+Status FileSystem::makeDirectory(const std::string&) { return unsupported(*this, "Make folder"); }
+Status FileSystem::rename(const std::string&, const std::string&) {
+    return unsupported(*this, "Rename");
 }
 Status FileSystem::remove(const std::string&) { return unsupported(*this, "Delete"); }
 Status FileSystem::clear(const std::string&) { return unsupported(*this, "Clear"); }
@@ -34,6 +56,7 @@ std::vector<std::string> capabilityNames(Capability caps) {
         {Capability::Browse, "Browse"},        {Capability::Inspect, "Inspect"},
         {Capability::Extract, "Extract"},      {Capability::Inject, "Inject"},
         {Capability::Replace, "Replace"},      {Capability::Remove, "Delete"},
+        {Capability::MakeDirectory, "Make folder"}, {Capability::Rename, "Rename"},
         {Capability::Clear, "Clear"},          {Capability::HealthCheck, "Health check"},
         {Capability::Repair, "Repair"},
     };

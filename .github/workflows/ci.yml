@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # The GUI-free core and its tests need only a C++20 compiler and CMake, so they
+  # run on every desktop OS.
+  core:
+    name: core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DUNNAMED_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+  core-sanitizers:
+    name: core (ASan + UBSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -S . -B build -DUNNAMED_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Wpedantic"
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # The Qt/Kirigami app, built against Arch's KDE Frameworks 6 packages.
+  # NOTE: not yet verified on GitHub runners. Windows, macOS and Android app
+  # builds need a KDE Frameworks toolchain and are planned with packaging (M5).
+  app-linux:
+    name: app (Linux, KF6)
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: >
+          pacman -Syu --noconfirm base-devel git cmake ninja extra-cmake-modules
+          qt6-base qt6-declarative qt6-svg qt6-shadertools kirigami kiconthemes breeze-icons
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Smoke test (starts and stays up)
+        run: |
+          export QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software
+          set +e
+          timeout 8 ./build/UnnamedGpl3QtApp
+          code=$?
+          test "$code" = 124   # 124 = still running when the timeout hit

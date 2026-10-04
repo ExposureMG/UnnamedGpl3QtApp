@@ -2,6 +2,7 @@
 
 #include "core/FileSystemRegistry.hpp"
 #include "gui/FileSystemModel.hpp"
+#include "gui/JobModel.hpp"
 #include "gui/MountModel.hpp"
 
 #include <QObject>
@@ -9,6 +10,10 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
+
+#include <atomic>
+#include <functional>
+#include <memory>
 
 namespace unnamed::gui {
 
@@ -21,6 +26,8 @@ class FileBrowser : public QObject {
     QML_SINGLETON
     Q_PROPERTY(unnamed::gui::FileSystemModel* model READ model CONSTANT)
     Q_PROPERTY(unnamed::gui::MountModel* mounts READ mounts CONSTANT)
+    Q_PROPERTY(unnamed::gui::JobModel* jobs READ jobs CONSTANT)
+    Q_PROPERTY(bool loading READ loading NOTIFY loadingChanged)
     Q_PROPERTY(int currentMount READ currentMount NOTIFY stateChanged)
     Q_PROPERTY(bool isOpen READ isOpen NOTIFY stateChanged)
     Q_PROPERTY(bool canGoUp READ canGoUp NOTIFY stateChanged)
@@ -39,6 +46,8 @@ class FileBrowser : public QObject {
     Q_PROPERTY(bool canReplace READ canReplace NOTIFY selectionChanged)
     Q_PROPERTY(bool canRemove READ canRemove NOTIFY selectionChanged)
     Q_PROPERTY(bool canInject READ canInject NOTIFY stateChanged)
+    Q_PROPERTY(bool canMakeDirectory READ canMakeDirectory NOTIFY stateChanged)
+    Q_PROPERTY(bool canRename READ canRename NOTIFY selectionChanged)
 
     // Expanded view: {title, subtitle, kind, notice, groups:[{title, items:[{label, value}]}]}
     Q_PROPERTY(QVariantMap itemDetails READ itemDetails NOTIFY detailsChanged)
@@ -48,7 +57,11 @@ public:
     explicit FileBrowser(QObject* parent = nullptr);
 
     FileSystemModel* model() const { return m_model; }
+    ~FileBrowser() override;
+
     MountModel* mounts() const { return m_mounts; }
+    JobModel* jobs() const { return m_jobs; }
+    bool loading() const { return m_loading; }
     int currentMount() const { return m_mounts->current(); }
     bool isOpen() const { return m_mounts->current() >= 0; }
     bool canGoUp() const { return isOpen() && m_model->path() != QStringLiteral("/"); }
@@ -66,6 +79,8 @@ public:
     bool canReplace() const { return hasSelection() && !selectedIsDirectory() && has(core::Capability::Replace); }
     bool canRemove() const { return hasSelection() && has(core::Capability::Remove); }
     bool canInject() const { return has(core::Capability::Inject); }
+    bool canMakeDirectory() const { return has(core::Capability::MakeDirectory); }
+    bool canRename() const { return hasSelection() && has(core::Capability::Rename); }
 
     QVariantMap itemDetails() const { return m_itemDetails; }
     QVariantMap fileSystemDetails() const { return m_fileSystemDetails; }
@@ -91,6 +106,8 @@ public:
     Q_INVOKABLE void injectFile(const QUrl& file);
     Q_INVOKABLE void replaceSelected(const QUrl& file);
     Q_INVOKABLE void removeSelected();
+    Q_INVOKABLE void makeDirectory(const QString& name);
+    Q_INVOKABLE void renameSelected(const QString& newName);
     Q_INVOKABLE void refresh();
 
 signals:
@@ -98,27 +115,45 @@ signals:
     void selectionChanged();
     void detailsChanged();
     void inspectFileSystemChanged();
+    void loadingChanged();
     void errorMessageChanged();
     void errorOccurred(const QString& message); // every failure, even a repeated one
     void notice(const QString& message); // transient success message
 
 private:
+    // Handed to background work: cancellation flag and throttled progress.
+    struct JobContext {
+        std::shared_ptr<std::atomic_bool> cancel;
+        std::function<void(double fraction, const QString& message)> progress;
+        bool cancelled() const { return cancel->load(); }
+    };
+    using Work = std::function<core::Status(core::FileSystem&, const JobContext&)>;
+    using Done = std::function<void(const core::Status&)>;
+
+    std::shared_ptr<MountRuntime> runtime() const;
     bool has(core::Capability cap) const;
     QString selectedPath() const;
     void addMount(const QString& kind, const QString& hostPath, const QString& name);
-    void navigate(const QString& path);
+    void navigate(const QString& path, const QString& selectAfter = {});
+    void setLoading(bool loading);
     void setSelectedName(const QString& name);
     void refreshDetails();
-    void report(const core::Status& status, const QString& successMessage = {});
+    void runJob(const QString& title, const std::shared_ptr<MountRuntime>& rt, Work work, Done done);
+    void finishOperation(const core::Status& status, const QString& successMessage,
+                         const QString& selectAfter = {});
     void setError(const QString& message);
 
     core::FileSystemRegistry m_registry;
     FileSystemModel* m_model;
     MountModel* m_mounts;
+    JobModel* m_jobs;
     QString m_selectedName;
     QVariantMap m_itemDetails;
     QVariantMap m_fileSystemDetails;
     bool m_inspectFileSystem = false;
+    bool m_loading = false;
+    quint64 m_navGeneration = 0;     // drops listing results that were superseded
+    quint64 m_detailsGeneration = 0; // same for details
     QString m_errorMessage;
 };
 

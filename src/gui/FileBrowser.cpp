@@ -1,8 +1,13 @@
 #include "gui/FileBrowser.hpp"
 
+#include "core/LocalFileSystem.hpp"
 #include "core/PathUtil.hpp"
+#include "core/Transfer.hpp"
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QFileInfo>
+#include <QRunnable>
 
 namespace unnamed::gui {
 
@@ -40,13 +45,28 @@ FileBrowser::FileBrowser(QObject* parent)
     : QObject(parent),
       m_registry(core::FileSystemRegistry::withBuiltins()),
       m_model(new FileSystemModel(this)),
-      m_mounts(new MountModel(this)) {
+      m_mounts(new MountModel(this)),
+      m_jobs(new JobModel(this)) {
     connect(m_model, &FileSystemModel::countChanged, this, &FileBrowser::stateChanged);
 }
 
+FileBrowser::~FileBrowser() {
+    // Stop worker threads before the models they report to go away.
+    for (int i = 0; i < m_mounts->count(); ++i) {
+        const auto& rt = m_mounts->at(i).runtime;
+        m_jobs->cancelAllFor(rt.get());
+        rt->pool.clear();
+        rt->pool.waitForDone();
+    }
+}
+
+std::shared_ptr<MountRuntime> FileBrowser::runtime() const {
+    return isOpen() ? m_mounts->at(currentMount()).runtime : nullptr;
+}
+
 bool FileBrowser::has(core::Capability cap) const {
-    const core::FileSystem* fs = m_model->fileSystem();
-    return fs && core::hasCapability(fs->capabilities(), cap);
+    const auto rt = runtime();
+    return rt && core::hasCapability(rt->capabilities, cap);
 }
 
 QString FileBrowser::rootName() const {
@@ -69,6 +89,8 @@ QVariantList FileBrowser::pathSegments() const {
 QString FileBrowser::statusText() const {
     if (!isOpen())
         return tr("Open a folder to begin");
+    if (m_loading)
+        return tr("Loading…");
     if (m_model->filterText().isEmpty())
         return QCoreApplication::translate("FileBrowser", "%n item(s)", nullptr, m_model->count());
     return tr("%1 of %2 items").arg(m_model->count()).arg(m_model->totalCount());
@@ -88,6 +110,59 @@ void FileBrowser::setInspectFileSystem(bool value) {
         return;
     m_inspectFileSystem = value;
     emit inspectFileSystemChanged();
+}
+
+void FileBrowser::setLoading(bool loading) {
+    if (m_loading == loading)
+        return;
+    m_loading = loading;
+    emit loadingChanged();
+    emit stateChanged();
+}
+
+// --- background work --------------------------------------------------------
+
+void FileBrowser::runJob(const QString& title, const std::shared_ptr<MountRuntime>& rt, Work work, Done done) {
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    const int id = m_jobs->add(title, rt.get(), cancel);
+
+    JobContext ctx;
+    ctx.cancel = cancel;
+    auto timer = std::make_shared<QElapsedTimer>();
+    timer->start();
+    ctx.progress = [this, id, timer](double fraction, const QString& message) {
+        // Called on the worker thread; update the UI at most ~12x per second.
+        if (timer->elapsed() < 80)
+            return;
+        timer->restart();
+        QMetaObject::invokeMethod(this, [this, id, fraction, message] { m_jobs->setProgress(id, fraction, message); },
+                                  Qt::QueuedConnection);
+    };
+
+    rt->pool.start(QRunnable::create([this, rt, id, work = std::move(work), done = std::move(done), ctx] {
+        const core::Status status = work(*rt->fs, ctx);
+        QMetaObject::invokeMethod(
+            this,
+            [this, id, status, done] {
+                m_jobs->finish(id,
+                               status.ok ? JobModel::Succeeded
+                                         : (status.cancelled ? JobModel::Cancelled : JobModel::Failed),
+                               QString::fromStdString(status.message));
+                done(status);
+            },
+            Qt::QueuedConnection);
+    }));
+}
+
+void FileBrowser::finishOperation(const core::Status& status, const QString& successMessage,
+                                  const QString& selectAfter) {
+    if (status)
+        emit notice(successMessage);
+    else if (status.cancelled)
+        emit notice(tr("Cancelled"));
+    else
+        setError(QString::fromStdString(status.message));
+    navigate(m_model->path(), selectAfter);
 }
 
 // --- opening / switching ----------------------------------------------------
@@ -119,7 +194,7 @@ void FileBrowser::addMount(const QString& kind, const QString& hostPath, const Q
     mount.name = name;
     mount.kind = kind;
     mount.hostPath = hostPath;
-    mount.fs = std::move(fs);
+    mount.runtime = std::make_shared<MountRuntime>(std::move(fs));
     m_mounts->add(std::move(mount));
     setError({});
     selectMount(m_mounts->count() - 1);
@@ -129,25 +204,30 @@ void FileBrowser::selectMount(int index) {
     if (index < 0 || index >= m_mounts->count())
         return;
     m_mounts->setCurrent(index);
-    m_model->setFileSystem(m_mounts->at(index).fs);
+    m_model->clear();
     m_selectedName.clear();
+    emit selectionChanged();
     navigate(m_mounts->at(index).currentPath);
 }
 
 void FileBrowser::closeMount(int index) {
     if (index < 0 || index >= m_mounts->count())
         return;
+    const auto rt = m_mounts->at(index).runtime;
     const bool wasCurrent = index == currentMount();
+    m_jobs->cancelAllFor(rt.get());
     m_mounts->remove(index);
     if (!wasCurrent) {
         emit stateChanged();
         return;
     }
+    ++m_navGeneration; // drop any listing still in flight for the closed mount
     m_selectedName.clear();
     if (m_mounts->count() > 0) {
         selectMount(qMin(index, m_mounts->count() - 1));
     } else {
-        m_model->setFileSystem(nullptr);
+        m_model->clear();
+        setLoading(false);
         refreshDetails();
         emit selectionChanged();
         emit stateChanged();
@@ -166,16 +246,45 @@ void FileBrowser::goUp() {
         navigate(QString::fromStdString(core::parentPath(m_model->path().toStdString())));
 }
 
-void FileBrowser::navigate(const QString& path) {
-    const core::Status status = m_model->setPath(path);
-    if (status) {
-        m_mounts->at(currentMount()).currentPath = path;
-        m_selectedName.clear();
-    }
-    setError(status ? QString() : QString::fromStdString(status.message));
-    refreshDetails();
-    emit selectionChanged();
-    emit stateChanged();
+void FileBrowser::refresh() {
+    if (isOpen())
+        navigate(m_model->path(), m_selectedName);
+}
+
+void FileBrowser::navigate(const QString& path, const QString& selectAfter) {
+    const auto rt = runtime();
+    if (!rt)
+        return;
+    const quint64 generation = ++m_navGeneration;
+    setLoading(true);
+
+    rt->pool.start(QRunnable::create([this, rt, path, selectAfter, generation] {
+        std::vector<core::Entry> entries;
+        const core::Status status = rt->fs->list(path.toStdString(), entries);
+        QMetaObject::invokeMethod(
+            this,
+            [this, rt, path, selectAfter, generation, status, entries = std::move(entries)]() mutable {
+                if (generation != m_navGeneration)
+                    return; // superseded by a newer navigation, or the mount was closed
+                setLoading(false);
+                if (status) {
+                    m_model->setEntries(path, std::move(entries));
+                    m_mounts->at(currentMount()).currentPath = path;
+                    m_selectedName = (!selectAfter.isEmpty() && m_model->rowForName(selectAfter) >= 0)
+                                         ? selectAfter
+                                         : QString();
+                    setError({});
+                } else {
+                    setError(QString::fromStdString(status.message));
+                    if (path != QStringLiteral("/") && m_model->path() != path)
+                        navigate(QStringLiteral("/")); // e.g. a remembered folder is gone
+                }
+                refreshDetails();
+                emit selectionChanged();
+                emit stateChanged();
+            },
+            Qt::QueuedConnection);
+    }));
 }
 
 void FileBrowser::setSelectedName(const QString& name) {
@@ -208,79 +317,139 @@ void FileBrowser::activate(int row) {
 }
 
 void FileBrowser::refreshDetails() {
-    m_itemDetails.clear();
-    m_fileSystemDetails.clear();
-
-    if (const core::FileSystem* fs = m_model->fileSystem()) {
-        core::Details d;
-        const std::string target = hasSelection() ? selectedPath().toStdString() : m_model->path().toStdString();
-        if (fs->describe(target, d))
-            m_itemDetails = toVariant(d);
-        if (fs->describeFileSystem(d))
-            m_fileSystemDetails = toVariant(d);
+    const auto rt = runtime();
+    const quint64 generation = ++m_detailsGeneration;
+    if (!rt || !core::hasCapability(rt->capabilities, core::Capability::Inspect)) {
+        m_itemDetails.clear();
+        m_fileSystemDetails.clear();
+        emit detailsChanged();
+        return;
     }
-    emit detailsChanged();
+
+    const std::string target = hasSelection() ? selectedPath().toStdString() : m_model->path().toStdString();
+    rt->pool.start(QRunnable::create([this, rt, target, generation] {
+        core::Details item, filesystem;
+        const bool haveItem = bool(rt->fs->describe(target, item));
+        const bool haveFs = bool(rt->fs->describeFileSystem(filesystem));
+        QMetaObject::invokeMethod(
+            this,
+            [this, generation, haveItem, haveFs, item = std::move(item), filesystem = std::move(filesystem)] {
+                if (generation != m_detailsGeneration)
+                    return;
+                m_itemDetails = haveItem ? toVariant(item) : QVariantMap();
+                m_fileSystemDetails = haveFs ? toVariant(filesystem) : QVariantMap();
+                emit detailsChanged();
+            },
+            Qt::QueuedConnection);
+    }));
 }
 
-// --- operations -------------------------------------------------------------
-
-void FileBrowser::report(const core::Status& status, const QString& successMessage) {
-    if (status) {
-        setError({});
-        if (!successMessage.isEmpty())
-            emit notice(successMessage);
-    } else {
-        setError(QString::fromStdString(status.message));
-    }
-}
+// --- operations (each one is a cancellable background job) -------------------
 
 void FileBrowser::extractSelected(const QUrl& destinationFolder) {
-    if (!canExtract())
+    const auto rt = runtime();
+    if (!rt || !canExtract())
         return;
-    const auto dest = toHostPath(destinationFolder.toLocalFile()) / core::pathFromUtf8(m_selectedName.toStdString());
-    report(m_model->fileSystem()->extract(selectedPath().toStdString(), dest),
-           tr("Extracted %1").arg(m_selectedName));
+    const QString name = m_selectedName;
+    const std::string source = selectedPath().toStdString();
+    const QString destination = destinationFolder.toLocalFile();
+
+    runJob(tr("Extract %1").arg(name), rt,
+           [=](core::FileSystem& fs, const JobContext& ctx) {
+               core::LocalFileSystem host(toHostPath(destination));
+               core::TransferOptions options;
+               options.progress = [&](const core::TransferProgress& p) {
+                   ctx.progress(p.bytesTotal ? double(p.bytesDone) / double(p.bytesTotal) : -1.0,
+                                QString::fromStdString(p.current));
+                   return !ctx.cancelled();
+               };
+               return core::copyTree(fs, source, host, "/" + name.toStdString(), options);
+           },
+           [this, name](const core::Status& st) { finishOperation(st, tr("Extracted %1").arg(name)); });
 }
 
 void FileBrowser::injectFile(const QUrl& file) {
-    if (!canInject())
+    const auto rt = runtime();
+    if (!rt || !canInject())
         return;
-    const core::Status status = m_model->fileSystem()->inject(m_model->path().toStdString(), toHostPath(file.toLocalFile()));
-    report(status, tr("Added %1").arg(file.fileName()));
-    if (status)
-        refresh();
+    const QFileInfo info(file.toLocalFile());
+    const QString name = info.fileName();
+    const QString hostDir = info.absolutePath();
+    const std::string destination = core::joinPath(m_model->path().toStdString(), name.toStdString());
+
+    runJob(tr("Add %1").arg(name), rt,
+           [=](core::FileSystem& fs, const JobContext& ctx) {
+               core::LocalFileSystem host(toHostPath(hostDir));
+               core::TransferOptions options;
+               options.progress = [&](const core::TransferProgress& p) {
+                   ctx.progress(p.bytesTotal ? double(p.bytesDone) / double(p.bytesTotal) : -1.0,
+                                QString::fromStdString(p.current));
+                   return !ctx.cancelled();
+               };
+               return core::copyTree(host, "/" + name.toStdString(), fs, destination, options);
+           },
+           [this, name](const core::Status& st) { finishOperation(st, tr("Added %1").arg(name), name); });
 }
 
 void FileBrowser::replaceSelected(const QUrl& file) {
-    if (!canReplace())
+    const auto rt = runtime();
+    if (!rt || !canReplace())
         return;
-    const core::Status status = m_model->fileSystem()->replace(selectedPath().toStdString(), toHostPath(file.toLocalFile()));
-    report(status, tr("Replaced %1").arg(m_selectedName));
-    if (status)
-        refresh();
+    const QFileInfo info(file.toLocalFile());
+    const QString hostDir = info.absolutePath();
+    const QString hostName = info.fileName();
+    const QString name = m_selectedName;
+    const std::string destination = selectedPath().toStdString();
+
+    runJob(tr("Replace %1").arg(name), rt,
+           [=](core::FileSystem& fs, const JobContext& ctx) {
+               core::LocalFileSystem host(toHostPath(hostDir));
+               core::TransferOptions options;
+               options.overwrite = true;
+               options.progress = [&](const core::TransferProgress& p) {
+                   ctx.progress(p.bytesTotal ? double(p.bytesDone) / double(p.bytesTotal) : -1.0,
+                                QString::fromStdString(p.current));
+                   return !ctx.cancelled();
+               };
+               return core::copyTree(host, "/" + hostName.toStdString(), fs, destination, options);
+           },
+           [this, name](const core::Status& st) { finishOperation(st, tr("Replaced %1").arg(name), name); });
 }
 
 void FileBrowser::removeSelected() {
-    if (!canRemove())
+    const auto rt = runtime();
+    if (!rt || !canRemove())
         return;
     const QString name = m_selectedName;
-    const core::Status status = m_model->fileSystem()->remove(selectedPath().toStdString());
-    report(status, tr("Deleted %1").arg(name));
-    if (status) {
-        m_selectedName.clear();
-        refresh();
-    }
+    const std::string path = selectedPath().toStdString();
+    runJob(tr("Delete %1").arg(name), rt,
+           [path](core::FileSystem& fs, const JobContext&) { return fs.remove(path); },
+           [this, name](const core::Status& st) { finishOperation(st, tr("Deleted %1").arg(name)); });
 }
 
-void FileBrowser::refresh() {
-    if (!isOpen())
+void FileBrowser::makeDirectory(const QString& name) {
+    const auto rt = runtime();
+    if (!rt || !canMakeDirectory() || name.trimmed().isEmpty())
         return;
-    const core::Status status = m_model->setPath(m_model->path());
-    if (!status)
-        setError(QString::fromStdString(status.message));
-    refreshDetails();
-    emit selectionChanged();
-    emit stateChanged();
+    const QString folder = name.trimmed();
+    const std::string path = core::joinPath(m_model->path().toStdString(), folder.toStdString());
+    runJob(tr("New folder %1").arg(folder), rt,
+           [path](core::FileSystem& fs, const JobContext&) { return fs.makeDirectory(path); },
+           [this, folder](const core::Status& st) { finishOperation(st, tr("Created %1").arg(folder), folder); });
+}
+
+void FileBrowser::renameSelected(const QString& newName) {
+    const auto rt = runtime();
+    if (!rt || !canRename() || newName.trimmed().isEmpty() || newName == m_selectedName)
+        return;
+    const QString oldName = m_selectedName;
+    const QString target = newName.trimmed();
+    const std::string path = selectedPath().toStdString();
+    runJob(tr("Rename %1").arg(oldName), rt,
+           [path, target](core::FileSystem& fs, const JobContext&) { return fs.rename(path, target.toStdString()); },
+           [this, oldName, target](const core::Status& st) {
+               finishOperation(st, tr("Renamed %1 to %2").arg(oldName, target), st ? target : oldName);
+           });
 }
 
 void FileBrowser::setError(const QString& message) {

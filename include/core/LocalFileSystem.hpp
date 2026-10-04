@@ -16,9 +16,13 @@ public:
     Status list(const std::string& path, std::vector<Entry>& out) const override;
     Status describe(const std::string& path, Details& out) const override;
     Status describeFileSystem(Details& out) const override;
-    Status extract(const std::string& path, const std::filesystem::path& hostDest) override;
-    Status inject(const std::string& dir, const std::filesystem::path& hostSource) override;
-    Status replace(const std::string& path, const std::filesystem::path& hostSource) override;
+    Status stat(const std::string& path, Entry& out) const override;
+    Result<std::unique_ptr<ByteSource>> openRead(const std::string& path) const override;
+    Result<std::unique_ptr<ByteSink>> openWrite(const std::string& path,
+                                                std::optional<std::uint64_t> size,
+                                                bool overwrite) override;
+    Status makeDirectory(const std::string& path) override;
+    Status rename(const std::string& path, const std::string& newName) override;
     Status remove(const std::string& path) override;
 
 private:

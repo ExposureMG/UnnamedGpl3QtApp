@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/FileSystem.hpp"
+#include "gui/MountRuntime.hpp"
 
 #include <QAbstractListModel>
 #include <QtQml/qqmlregistration.h>
@@ -16,7 +16,7 @@ struct Mount {
     QString kind;     // registry kind: "Local", "Demo", later "FATX", ...
     QString hostPath; // folder/image on the host; empty for kinds without one
     QString currentPath = QStringLiteral("/");
-    std::shared_ptr<core::FileSystem> fs;
+    std::shared_ptr<MountRuntime> runtime;
 };
 
 class MountModel : public QAbstractListModel {

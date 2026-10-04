@@ -10,7 +10,7 @@
 
 namespace unnamed::gui {
 
-// List model of one directory of a core::FileSystem, exposed to QML. Handles
+// List model of one directory listing, exposed to QML. Handles
 // sorting (folders always first) and name filtering.
 class FileSystemModel : public QAbstractListModel {
     Q_OBJECT
@@ -36,11 +36,10 @@ public:
 
     explicit FileSystemModel(QObject* parent = nullptr);
 
-    void setFileSystem(std::shared_ptr<core::FileSystem> fs);
-    core::FileSystem* fileSystem() const { return m_fs.get(); }
-
-    // Navigates to `path`; on failure the model keeps its previous contents.
-    core::Status setPath(const QString& path);
+    // Replaces the contents with the listing of `path` (done by FileBrowser once
+    // the background listing has finished).
+    void setEntries(const QString& path, std::vector<core::Entry> entries);
+    void clear();
     QString path() const { return m_path; }
 
     SortKey sortKey() const { return m_sortKey; }
@@ -69,7 +68,6 @@ signals:
 private:
     void rebuild();
 
-    std::shared_ptr<core::FileSystem> m_fs;
     QString m_path = QStringLiteral("/");
     std::vector<core::Entry> m_all;  // as listed by the filesystem
     std::vector<core::Entry> m_view; // filtered + sorted

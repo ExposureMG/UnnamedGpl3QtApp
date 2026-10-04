@@ -12,24 +12,37 @@ Genexis). KF6 QQC2 Desktop Style is optional: it is used when installed,
 otherwise Qt's default style is used.
 
 ```sh
-git submodule update --init --recursive   # optional for now, see extern/
 cmake -S . -B build
 cmake --build build
 ctest --test-dir build                    # core unit tests
 ./build/UnnamedGpl3QtApp
 ```
 
+The GUI-free core and its tests need only a compiler and CMake:
+
+```sh
+cmake -S . -B build -DUNNAMED_BUILD_APP=OFF
+```
+
+Optional backends are CMake features backed by git submodules (all off by
+default until their milestone lands, see [docs/ROADMAP.md](docs/ROADMAP.md)):
+`-DUNNAMED_WITH_FATX=ON`, `_XEX`, `_STFS` (run `git submodule update --init
+extern/<name>` first).
+
 # Project layout
 
 ```
 include/core, src/core   GUI-free library (unnamed_core, std C++ only)
-  FileSystem               abstract filesystem: list, describe (expanded view),
-                           extract/inject/replace/remove/..., Capability flags
+  FileSystem               abstract filesystem: list, stat, describe (expanded view),
+                           openRead/openWrite streams, mkdir, rename, remove, Capability flags
+  Stream, Transfer         byte streams and copyTree(): extract/inject/copy between any two filesystems
   LocalFileSystem          host directory backend
   DemoFileSystem           read-only *sample data* filesystem (XEX, STFS, ... views)
   FileSystemRegistry       kind -> factory; new backends (FATX, STFS, NAND, ...) register here
 include/gui, src/gui     C++ glue exposed to QML (talks to core::FileSystem only)
   FileBrowser              singleton: mounts, path, selection, details, operations
+                           (all filesystem work runs in cancellable background jobs)
+  JobModel                 background operations shown in the Transfers popup
   FileSystemModel          current folder as a list model (sort + filter)
   MountModel               open filesystems ("places")
 QML/                     Kirigami UI (QML module org.exposuremg.unnamed)
@@ -38,7 +51,7 @@ QML/                     Kirigami UI (QML module org.exposuremg.unnamed)
   pages/Details.qml        expanded view page (Item / Filesystem tabs)
   pages/About.qml          about page
   components/              StatusBar, PlacesSidebar, PathBar, FileListView, FileGridView,
-                           DetailsView, ItemActions, KindIcon
+                           DetailsView, ItemActions, JobsPopup, KindIcon
 src/Main.cpp             application entry point (loads the QML module)
 tests/                   unit tests for core (run via ctest)
 extern/                  git submodules (XexTool, gxbuild3, Genexis, FATX)
@@ -54,8 +67,10 @@ extern/                  git submodules (XexTool, gxbuild3, Genexis, FATX)
   file or folder (XEX, STFS, INI, ... each get their own property groups); the
   *Filesystem* tab describes the filesystem object itself (type, capacity,
   health, supported operations).
-- Extract / Replace / Delete / Add Files are enabled from the filesystem's
-  capabilities (context menu, details page, toolbar, drag and drop).
+- Extract / Replace / Rename / Delete / New Folder / Add Files are enabled from the
+  filesystem's capabilities (context menu, details page, toolbar, drag and drop).
+- Everything runs in the background; the status bar's *Transfers* button shows
+  progress and lets you cancel.
 - *Open > Open Demo* loads sample data so the expanded views can be explored
   before the real format backends exist.
 

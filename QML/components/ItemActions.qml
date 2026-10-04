@@ -1,4 +1,6 @@
 import QtQuick
+import QtQuick.Layouts
+import QtQuick.Controls as QQC2
 import QtQuick.Dialogs
 import org.kde.kirigami as Kirigami
 import org.exposuremg.unnamed
@@ -16,6 +18,8 @@ Item {
     property alias replace: replaceAction
     property alias remove: removeAction
     property alias inject: injectAction
+    property alias newFolder: newFolderAction
+    property alias rename: renameAction
 
     signal propertiesRequested
 
@@ -67,6 +71,30 @@ Item {
         onTriggered: injectDialog.open()
     }
 
+    Kirigami.Action {
+        id: newFolderAction
+        text: qsTr("New Folder…")
+        icon.name: "folder-new"
+        enabled: FileBrowser.canMakeDirectory
+        onTriggered: {
+            nameDialog.renaming = false;
+            nameField.text = "";
+            nameDialog.open();
+        }
+    }
+
+    Kirigami.Action {
+        id: renameAction
+        text: qsTr("Rename…")
+        icon.name: "edit-rename"
+        enabled: FileBrowser.canRename
+        onTriggered: {
+            nameDialog.renaming = true;
+            nameField.text = FileBrowser.selectedName;
+            nameDialog.open();
+        }
+    }
+
     FolderDialog {
         id: extractDialog
         title: qsTr("Extract To")
@@ -96,5 +124,35 @@ Item {
         dialogType: Kirigami.PromptDialog.Warning
         standardButtons: Kirigami.Dialog.Ok | Kirigami.Dialog.Cancel
         onAccepted: FileBrowser.removeSelected()
+    }
+
+    // Name entry for New Folder and Rename.
+    Kirigami.Dialog {
+        id: nameDialog
+
+        property bool renaming: false
+
+        title: renaming ? qsTr("Rename") : qsTr("New Folder")
+        standardButtons: Kirigami.Dialog.Ok | Kirigami.Dialog.Cancel
+        padding: Kirigami.Units.largeSpacing
+        onOpened: {
+            nameField.forceActiveFocus();
+            nameField.selectAll();
+        }
+        onAccepted: {
+            if (renaming)
+                FileBrowser.renameSelected(nameField.text);
+            else
+                FileBrowser.makeDirectory(nameField.text);
+        }
+
+        ColumnLayout {
+            QQC2.TextField {
+                id: nameField
+                Layout.preferredWidth: Kirigami.Units.gridUnit * 20
+                placeholderText: qsTr("Name")
+                Keys.onReturnPressed: nameDialog.accept()
+            }
+        }
     }
 }

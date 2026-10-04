@@ -42,7 +42,8 @@ LocalFileSystem::LocalFileSystem(fs::path root) : m_root(root.lexically_normal()
 
 Capability LocalFileSystem::capabilities() const {
     return Capability::Browse | Capability::Inspect | Capability::Extract |
-           Capability::Inject | Capability::Replace | Capability::Remove;
+           Capability::Inject | Capability::Replace | Capability::Remove |
+           Capability::MakeDirectory | Capability::Rename;
 }
 
 bool LocalFileSystem::resolve(const std::string& path, fs::path& out) const {
@@ -145,33 +146,70 @@ Status LocalFileSystem::describeFileSystem(Details& out) const {
     return Status::success();
 }
 
-Status LocalFileSystem::extract(const std::string& path, const fs::path& hostDest) {
-    fs::path src;
-    if (!resolve(path, src))
+Status LocalFileSystem::stat(const std::string& path, Entry& out) const {
+    fs::path target;
+    if (!resolve(path, target))
         return Status::failure("Invalid path: " + path);
     std::error_code ec;
-    fs::copy(src, hostDest, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+    const auto status = fs::status(target, ec);
+    if (ec || !fs::exists(status))
+        return Status::failure("No such file or folder: " + path);
+
+    out = {};
+    out.name = pathToUtf8(target.filename());
+    if (fs::is_directory(status)) {
+        out.type = EntryType::Directory;
+        out.kind = "folder";
+    } else {
+        out.size = fs::is_regular_file(status) ? fs::file_size(target, ec) : 0;
+        out.kind = kindFromName(out.name);
+    }
+    const auto mtime = fs::last_write_time(target, ec);
+    if (!ec)
+        out.modified = toUnixSeconds(mtime);
+    return Status::success();
+}
+
+Result<std::unique_ptr<ByteSource>> LocalFileSystem::openRead(const std::string& path) const {
+    fs::path target;
+    if (!resolve(path, target))
+        return Status::failure("Invalid path: " + path);
+    return openFileSource(target);
+}
+
+Result<std::unique_ptr<ByteSink>> LocalFileSystem::openWrite(const std::string& path,
+                                                             std::optional<std::uint64_t>,
+                                                             bool overwrite) {
+    fs::path target;
+    if (!resolve(path, target) || target == m_root)
+        return Status::failure("Invalid path: " + path);
+    return openFileSink(target, overwrite);
+}
+
+Status LocalFileSystem::makeDirectory(const std::string& path) {
+    fs::path target;
+    if (!resolve(path, target) || target == m_root)
+        return Status::failure("Invalid path: " + path);
+    std::error_code ec;
+    if (fs::exists(target, ec))
+        return Status::failure("Already exists: " + path);
+    fs::create_directory(target, ec);
     return fromError(ec);
 }
 
-Status LocalFileSystem::inject(const std::string& dir, const fs::path& hostSource) {
-    fs::path dest;
-    if (!resolve(dir, dest))
-        return Status::failure("Invalid path: " + dir);
-    std::error_code ec;
-    fs::copy(hostSource, dest / hostSource.filename(),
-             fs::copy_options::recursive | fs::copy_options::skip_existing, ec);
-    return fromError(ec);
-}
-
-Status LocalFileSystem::replace(const std::string& path, const fs::path& hostSource) {
-    fs::path dest;
-    if (!resolve(path, dest))
+Status LocalFileSystem::rename(const std::string& path, const std::string& newName) {
+    fs::path source;
+    if (!resolve(path, source) || source == m_root)
         return Status::failure("Invalid path: " + path);
+    if (newName.empty() || newName == "." || newName == ".." ||
+        newName.find('/') != std::string::npos || newName.find('\\') != std::string::npos)
+        return Status::failure("Invalid name: " + newName);
+
+    const fs::path target = source.parent_path() / pathFromUtf8(newName);
     std::error_code ec;
-    if (!fs::is_regular_file(dest, ec))
-        return Status::failure("Not a file: " + path);
-    fs::copy_file(hostSource, dest, fs::copy_options::overwrite_existing, ec);
+    if (fs::exists(target, ec))
+        return Status::failure("Already exists: " + newName);
+    fs::rename(source, target, ec);
     return fromError(ec);
 }
 

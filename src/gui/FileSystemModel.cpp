@@ -9,31 +9,16 @@ namespace unnamed::gui {
 
 FileSystemModel::FileSystemModel(QObject* parent) : QAbstractListModel(parent) {}
 
-void FileSystemModel::setFileSystem(std::shared_ptr<core::FileSystem> fs) {
-    beginResetModel();
-    m_fs = std::move(fs);
-    m_path = QStringLiteral("/");
-    m_all.clear();
-    m_view.clear();
-    endResetModel();
-    emit countChanged();
-    if (m_fs)
-        setPath(m_path);
-}
-
-core::Status FileSystemModel::setPath(const QString& path) {
-    if (!m_fs)
-        return core::Status::failure("No filesystem open");
-
-    std::vector<core::Entry> entries;
-    const core::Status status = m_fs->list(path.toStdString(), entries);
-    if (!status)
-        return status;
-
+void FileSystemModel::setEntries(const QString& path, std::vector<core::Entry> entries) {
     m_path = path;
     m_all = std::move(entries);
     rebuild();
-    return status;
+}
+
+void FileSystemModel::clear() {
+    m_path = QStringLiteral("/");
+    m_all.clear();
+    rebuild();
 }
 
 void FileSystemModel::setSortKey(SortKey key) {
