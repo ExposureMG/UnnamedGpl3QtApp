@@ -68,8 +68,9 @@ GUI (QML/Kirigami)  ->  FileBrowser (async jobs, one worker thread per mount)
 | XBDM and memory editor | yes | yes | yes | yes (network) |
 
 Drive access never runs the GUI as root: udisks2/pkexec on Linux, an elevated
-helper on Windows, `authopen` after unmounting on macOS. Drives open read-only;
-writing needs an explicit unlock and format needs type-to-confirm.
+helper on Windows, `authopen` after unmounting on macOS. Drives open read-write
+when possible (read-only with the reason otherwise), images read-only until
+unlocked; format needs type-to-confirm.
 
 ## Milestones
 
@@ -107,30 +108,34 @@ writing needs an explicit unlock and format needs type-to-confirm.
   capacity), extract, health check (fsck dry run). Partition images and Xbox 360
   disk images (each FATX partition becomes a place). GUI: *Open FATX Image…*
   and *Check Filesystem*. Tested against images made by `mkfs.fatx`
-- [x] Write support: inject/replace (through a temporary file renamed over
-  the target in `finish()`; a dropped transfer deletes it), new folder,
-  rename, delete, clear, repair (fsck with default answers), format (mkfs).
-  FATX name rules (ASCII, 42 characters, allowed characters, no names that
-  differ only in case) are checked with clear messages. Places open
-  read-only; *Enable Writing…* reopens one writable after a warning; *Format…*
-  needs the place's name typed and is only offered on a writable place.
-  Round trips are checked with the library's fsck and `fsck.fatx`; damaged
-  images are fuzzed (fork: 300 rounds per test run, 6000 more run once with
-  other seeds; app: 60 rounds), ASan/UBSan clean.
-  Not atomic on power loss: replacing deletes the old file, then renames the
-  new one (two directory writes)
+- [x] Write support: inject (a new file goes to a temporary file renamed to
+  its name in `finish()`; a dropped transfer deletes it), replace **in place**
+  (see the decisions below), new folder, rename, delete, clear, repair (fsck
+  with default answers), format (mkfs). FATX name rules (ASCII, 42
+  characters, allowed characters, no names that differ only in case) are
+  checked with clear messages. Images open read-only; *Enable Writing…*
+  reopens one writable after a warning. *Format…* needs the place's name
+  typed and is only offered on a writable place; *Repair Filesystem* and
+  *Delete* ask first. Round trips are checked with the library's fsck and
+  `fsck.fatx`; damaged images are fuzzed (fork: 300 rounds per test run,
+  6000 more run once with other seeds, 150 rounds of in-place replacements;
+  app: 60 rounds), ASan/UBSan clean
 - [x] Drives on Linux: *Open Drive…* lists whole disks from sysfs (model,
   size, mounted/in use, read-only; loop devices on request) and flags Xbox
   360 drives by probing their FATX layout when they are readable without a
-  prompt. A drive opens read-only; each FATX partition becomes a place;
-  *Enable Writing…* (stronger warning for drives) reopens it writable with
-  an exclusive open (refused while mounted). Privileges: `core::DriveAccess`
+  prompt. A drive opens **read-write** (exclusive open); when that is refused
+  (mounted or in use, read-only device, permission or polkit refusal) it
+  opens read-only and a dialog gives the reason. Each FATX partition becomes
+  a place with a read-write/read-only badge; *Make Read-only* / *Enable
+  Writing* switch a drive place without a prompt. Privileges: `core::DriveAccess`
   methods tried in order: the user's own rights, then udisks2 `OpenDevice`
   over D-Bus (sd-bus, `-DUNNAMED_WITH_UDISKS2`, on when libsystemd is found):
   polkit decides and udisks passes a file descriptor, so the GUI never runs
-  as root. Verified here with a loop device backed by an image: listing,
-  read/write as root, and a non-root user refused by polkit, then allowed by
-  a polkit rule. **Not verified**: a real Xbox 360 drive, the interactive
+  as root. Verified here with loop devices backed by images: listing,
+  read/write as root, a non-root user refused by polkit, then allowed by a
+  polkit rule; read-write by default, and the read-only fallback for a
+  read-only loop device and for one held open exclusively by another
+  process. **Not verified**: a real Xbox 360 drive, the interactive
   polkit password prompt (no authentication agent here), removable media
   hot-plug
 - [ ] Drives on Windows (elevated helper, `\\.\PhysicalDriveN`, sector-aligned
@@ -140,35 +145,58 @@ writing needs an explicit unlock and format needs type-to-confirm.
   tests (library-only FATX tests included) pass under Wine. **Not
   verified**: MSVC (the fork uses POSIX `mode_t`/`S_IRUSR`), macOS, Android
   (an fd-backed `BlockDevice` exists, no SAF glue yet), real Windows
-- [ ] unrm (undelete) in the UI: the library keeps `unrm.fatx`; not exposed yet
 - [ ] Verified against a real drive on all desktops (M1 "done when")
+
+#### Deferred (decided, not worked on now)
+
+- FAT timestamp format: the fork stores seconds without halving them (FAT
+  stores seconds/2); check against console-written dates and fix.
+- Recovery (undelete, `unrm.fatx`) in the UI.
+- Health-check polish (the *Check Filesystem* / *Repair* / *Format* UI stays
+  as it is meanwhile).
+- Drives on Windows and macOS (see above).
 
 #### M1 decisions and notes
 
-- **Fork changes** (branch `fatx-core`, 4 commits on v1.19): build fix,
+- **Fork changes** (branch `fatx-core`, 5 commits on v1.19): build fix,
   `fatx_core` + API, a set of bug fixes found by the new tests (reads at the
   last byte of an area overran the buffer; growing within a cluster failed;
   shrinking leaked clusters; growing from an unaligned size misplaced data;
   allocating part of a larger gap and freeing before the first gap corrupted
   the free-space map, which could cross-link files; moving to the root
   renamed in place; names with `{`/`}` threw), and MinGW support. Each is
-  covered by a test in `tests/test_core.cpp`. They should go upstream.
-- **Images open read-only too**, with the same *Enable Writing…* unlock as
-  drives, because images are often the backup of a drive.
+  covered by a test in `tests/test_core.cpp`. **Not sent upstream**: the
+  fork is maintained by re-pushing to GitHub from SourceForge.
+- **Drives open read-write by default, images read-only** (images are often
+  the backup of a drive; they keep the *Enable Writing…* unlock).
+- **Replace is in place**: replacing a FATX file keeps its directory entry
+  (same index in its directory, name, attributes, creation date) and its
+  start cluster and chain positions; the new data is written over the
+  existing clusters. The new size must fit the clusters the file has,
+  ceil(old size / cluster size); a bigger file is refused with the sizes,
+  changing nothing (the details view shows "Replacement can be up to"). A
+  smaller file keeps the start of its chain and frees the tail; an empty one
+  frees all its clusters (an empty FATX file has none) but keeps its entry.
+  Nothing on the device changes before `finish()`: the data is staged in a
+  temporary host file (as big as the file), then written over the old file in
+  one pass. That pass is not power-loss atomic. New files still go through a
+  temporary FATX file renamed into place. Fork API: `volume::replace()`,
+  `replace_capacity()`, `clusters()`, `entry_info::entry_offset`.
 - **Format** is `FileSystem::format()` (capability `Format`): the backend
   closes its volume, runs mkfs on its partition and reopens it.
 - **Clear** empties a folder (keeps the volume label file).
 - FATX times are local time as stored, shown in UTC by the details view;
-  mkfs.fatx writes serial 0. The fork stores seconds without halving them
-  (FAT stores seconds/2); not checked against console-written dates.
+  mkfs.fatx writes serial 0. Seconds: see Deferred.
 - The app builds `fatx_core` in C++20 (the fork's own build uses C++26 and
   GCC 14's warnings); FATX needs CMake >= 3.25 and the Boost headers.
 
 ## Risks
 
 - **Raw-device safety.** FATX writes and format can destroy a console drive:
-  read-only by default, explicit write unlock, type-to-confirm (all done in
-  M1); still to do: offer to save an image backup before the first write.
+  images read-only by default with an explicit unlock, drives read-write by
+  default (user decision) with a visible badge and one-click read-only,
+  confirmations for delete/repair, type-to-confirm for format; still to do:
+  offer to save an image backup before the first write.
 - **Untrusted input.** STFS/XEX parsers read hostile files: bounds checks, sanitizer
   CI, fuzzing.
 - **Live memory writes** can crash a console: the memory editor starts read-only.

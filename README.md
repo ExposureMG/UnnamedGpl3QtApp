@@ -77,9 +77,16 @@ With `-DUNNAMED_WITH_FATX=ON`:
   usually root-only), the app asks udisks2, and polkit asks for your
   password; the app itself never runs as root (`-DUNNAMED_WITH_UDISKS2`,
   needs libsystemd).
-- Places open **read-only**. The place's menu has *Enable Writing…* (and
-  *Make Read-only*), *Check Filesystem* (fsck dry run), *Repair Filesystem*
-  and *Format…* (type the place's name to confirm; only on a writable place).
+- Drives open **read-write** (or read-only, with the reason, when writing
+  is refused, e.g. the drive is mounted); images open **read-only**. A badge
+  on each place shows which. The place's menu has *Make Read-only* /
+  *Enable Writing* (images ask first), *Check Filesystem* (fsck dry run),
+  *Repair Filesystem* and *Format…* (type the place's name to confirm; only
+  on a writable place).
+- *Replace* overwrites a file in place: same directory entry, same clusters.
+  The new file must fit the clusters the old one has (the details view shows
+  "Replacement can be up to …"); otherwise delete it and add the new file. The
+  new data is first copied to a temporary file on the computer.
 - Writing follows the FATX rules: ASCII names of at most 42 characters from
   letters, digits, spaces and ``! # $ % & ' ( ) - . @ [ ] ^ _ ` { } ~``, no two
   names that differ only in case, files up to 4 GiB.
