@@ -172,7 +172,7 @@ std::vector<DriveInfo> listLinuxDrives(const LinuxDrivePaths& paths) {
         d.size = readNumber(sys / "size") * 512; // always in 512-byte sectors
         if (d.size == 0)
             continue; // empty card reader, detached loop device
-        d.path = (paths.dev / name).string();
+        d.path = paths.dev.generic_string() + "/" + name; // a Linux path, also when tested elsewhere
         d.removable = readNumber(sys / "removable") != 0;
         d.readOnly = readNumber(sys / "ro") != 0;
         d.model = readLine(sys / "device" / "model");
@@ -187,7 +187,7 @@ std::vector<DriveInfo> listLinuxDrives(const LinuxDrivePaths& paths) {
 
         // mounted, or used by device-mapper / RAID (holders) for the disk or a partition
         d.inUse = std::any_of(mounted.begin(), mounted.end(),
-                              [&](const std::string& m) { return isOnDisk(m, paths.dev.string(), name); });
+                              [&](const std::string& m) { return isOnDisk(m, paths.dev.generic_string(), name); });
         auto hasHolders = [](const fs::path& dir) {
             std::error_code e;
             return fs::is_directory(dir, e) && fs::directory_iterator(dir, e) != fs::directory_iterator();

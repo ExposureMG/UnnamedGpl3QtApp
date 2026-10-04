@@ -47,6 +47,7 @@ include/core, src/core   GUI-free library (unnamed_core, std C++ only)
   FileSystemRegistry       kind -> factory; new backends (FATX, STFS, NAND, ...) register here
   BlockDevice              random-access storage (image file now, drives later) under a backend
   FatxFileSystem           Xbox 360 FATX (optional, wraps fatx_core from extern/FATX)
+  Drives                   drive listing and opening (Linux: sysfs, direct or udisks2)
 include/gui, src/gui     C++ glue exposed to QML (talks to core::FileSystem only)
   FileBrowser              singleton: mounts, path, selection, details, operations
                            (all filesystem work runs in cancellable background jobs)
@@ -64,6 +65,24 @@ src/Main.cpp             application entry point (loads the QML module)
 tests/                   unit tests for core (run via ctest)
 extern/                  git submodules (XexTool, gxbuild3, Genexis, FATX)
 ```
+
+# Xbox 360 FATX
+
+With `-DUNNAMED_WITH_FATX=ON`:
+
+- *Open > Open FATX Image…* opens a partition image, a memory unit image or a
+  whole Xbox 360 disk image; every FATX partition becomes a place.
+- *Open > Open Drive…* (Linux) lists the drives, marks Xbox 360 ones, and
+  opens one the same way. If you cannot read the drive (`/dev/sdX` is
+  usually root-only), the app asks udisks2, and polkit asks for your
+  password; the app itself never runs as root (`-DUNNAMED_WITH_UDISKS2`,
+  needs libsystemd).
+- Places open **read-only**. The place's menu has *Enable Writing…* (and
+  *Make Read-only*), *Check Filesystem* (fsck dry run), *Repair Filesystem*
+  and *Format…* (type the place's name to confirm; only on a writable place).
+- Writing follows the FATX rules: ASCII names of at most 42 characters from
+  letters, digits, spaces and ``! # $ % & ' ( ) - . @ [ ] ^ _ ` { } ~``, no two
+  names that differ only in case, files up to 4 GiB.
 
 # File browser UI
 

@@ -7,7 +7,10 @@ on:
 
 jobs:
   # The GUI-free core and its tests need only a C++20 compiler and CMake, so they
-  # run on every desktop OS.
+  # run on every desktop OS. The FATX backend (extern/FATX, needs Boost) is
+  # built and tested on Linux; on Windows it has only been cross-built with
+  # MinGW and run under Wine, MSVC and macOS are not tried yet (see
+  # docs/ROADMAP.md).
   core:
     name: core (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -15,10 +18,23 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-24.04
+            fatx: "ON"
+          - os: windows-latest
+            fatx: "OFF"
+          - os: macos-latest
+            fatx: "OFF"
     steps:
       - uses: actions/checkout@v4
+      - name: FATX submodule and dependencies
+        if: matrix.fatx == 'ON'
+        run: |
+          git submodule update --init extern/FATX
+          sudo apt-get update
+          sudo apt-get install -y libboost-dev libboost-program-options-dev libsystemd-dev
       - name: Configure
-        run: cmake -S . -B build -DUNNAMED_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DUNNAMED_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release -DUNNAMED_WITH_FATX=${{ matrix.fatx }}
       - name: Build
         run: cmake --build build --config Release
       - name: Test
@@ -29,9 +45,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: FATX submodule and dependencies
+        run: |
+          git submodule update --init extern/FATX
+          sudo apt-get update
+          sudo apt-get install -y libboost-dev libboost-program-options-dev libsystemd-dev
       - name: Configure
         run: >
-          cmake -S . -B build -DUNNAMED_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Debug
+          cmake -S . -B build -DUNNAMED_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Debug -DUNNAMED_WITH_FATX=ON
           -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Wpedantic"
       - name: Build
         run: cmake --build build
@@ -50,9 +71,14 @@ jobs:
         run: >
           pacman -Syu --noconfirm base-devel git cmake ninja extra-cmake-modules
           qt6-base qt6-declarative qt6-svg qt6-shadertools kirigami kiconthemes breeze-icons
+          boost systemd-libs
       - uses: actions/checkout@v4
+      - name: FATX submodule
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule update --init extern/FATX
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUNNAMED_WITH_FATX=ON
       - name: Build
         run: cmake --build build
       - name: Test

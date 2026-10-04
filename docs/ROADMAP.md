@@ -64,7 +64,7 @@ GUI (QML/Kirigami)  ->  FileBrowser (async jobs, one worker thread per mount)
 |---|---|---|---|---|
 | Browse, XEX tools, STFS | yes | yes | yes | yes |
 | FATX on image files | yes | yes | yes | yes (file descriptors) |
-| FATX on a physical drive | yes | yes (admin) | yes (root) | no |
+| FATX on a physical drive | yes (udisks2) | planned (admin helper) | planned (authopen) | no |
 | XBDM and memory editor | yes | yes | yes | yes (network) |
 
 Drive access never runs the GUI as root: udisks2/pkexec on Linux, an elevated
@@ -136,12 +136,39 @@ writing needs an explicit unlock and format needs type-to-confirm.
 - [ ] Drives on Windows (elevated helper, `\\.\PhysicalDriveN`, sector-aligned
   I/O) and macOS (`authopen` after unmounting): to implement behind
   `core::DriveAccess`/`BlockDevice`; `listDrives()` returns nothing there yet
+- [x] Portability check: the core with FATX cross-builds with MinGW and its
+  tests (library-only FATX tests included) pass under Wine. **Not
+  verified**: MSVC (the fork uses POSIX `mode_t`/`S_IRUSR`), macOS, Android
+  (an fd-backed `BlockDevice` exists, no SAF glue yet), real Windows
+- [ ] unrm (undelete) in the UI: the library keeps `unrm.fatx`; not exposed yet
 - [ ] Verified against a real drive on all desktops (M1 "done when")
+
+#### M1 decisions and notes
+
+- **Fork changes** (branch `fatx-core`, 4 commits on v1.19): build fix,
+  `fatx_core` + API, a set of bug fixes found by the new tests (reads at the
+  last byte of an area overran the buffer; growing within a cluster failed;
+  shrinking leaked clusters; growing from an unaligned size misplaced data;
+  allocating part of a larger gap and freeing before the first gap corrupted
+  the free-space map, which could cross-link files; moving to the root
+  renamed in place; names with `{`/`}` threw), and MinGW support. Each is
+  covered by a test in `tests/test_core.cpp`. They should go upstream.
+- **Images open read-only too**, with the same *Enable Writing…* unlock as
+  drives, because images are often the backup of a drive.
+- **Format** is `FileSystem::format()` (capability `Format`): the backend
+  closes its volume, runs mkfs on its partition and reopens it.
+- **Clear** empties a folder (keeps the volume label file).
+- FATX times are local time as stored, shown in UTC by the details view;
+  mkfs.fatx writes serial 0. The fork stores seconds without halving them
+  (FAT stores seconds/2); not checked against console-written dates.
+- The app builds `fatx_core` in C++20 (the fork's own build uses C++26 and
+  GCC 14's warnings); FATX needs CMake >= 3.25 and the Boost headers.
 
 ## Risks
 
 - **Raw-device safety.** FATX writes and format can destroy a console drive:
-  read-only by default, explicit write unlock, type-to-confirm, offer an image backup.
+  read-only by default, explicit write unlock, type-to-confirm (all done in
+  M1); still to do: offer to save an image backup before the first write.
 - **Untrusted input.** STFS/XEX parsers read hostile files: bounds checks, sanitizer
   CI, fuzzing.
 - **Live memory writes** can crash a console: the memory editor starts read-only.

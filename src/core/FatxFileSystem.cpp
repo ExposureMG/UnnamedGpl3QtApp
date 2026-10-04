@@ -161,7 +161,7 @@ public:
         if (!m_volume)
             return closed();
         fatx::entry_info e;
-        if (int err = m_volume->stat(path, e))
+        if (int err = m_volume->lookup(path, e))
             return fail(err, "Cannot open " + path);
         out = toEntry(e);
         return Status::success();
@@ -172,7 +172,7 @@ public:
         if (!m_volume)
             return closed();
         fatx::entry_info e;
-        if (int err = m_volume->stat(path, e))
+        if (int err = m_volume->lookup(path, e))
             return fail(err, "Cannot open " + path);
         const bool root = path.empty() || path == "/";
         out = {};
@@ -254,7 +254,7 @@ public:
         if (!m_volume)
             return closed();
         fatx::entry_info e;
-        if (int err = m_volume->stat(path, e))
+        if (int err = m_volume->lookup(path, e))
             return fail(err, "Cannot open " + path);
         if (e.directory)
             return Status::failure("Is a folder: " + path);
@@ -569,7 +569,7 @@ Result<std::unique_ptr<ByteSink>> FatxFileSystem::openWrite(const std::string& p
         char tempName[32];
         std::snprintf(tempName, sizeof tempName, "~unnamed.%u.tmp", n);
         temp = joinPath(folder, tempName);
-        if (m_volume->stat(temp, info) == ENOENT)
+        if (m_volume->lookup(temp, info) == ENOENT)
             break;
     }
     // with a known size the clusters are allocated up front (one contiguous run
