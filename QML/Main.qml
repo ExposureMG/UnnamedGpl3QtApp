@@ -29,6 +29,7 @@ Kirigami.ApplicationWindow {
         onOpenFolderRequested: root.openFolderDialog()
         onOpenDemoRequested: FileBrowser.openDemo()
         onOpenFatxRequested: root.openFatxDialog()
+        onOpenDriveRequested: root.openDriveDialog()
     }
 
     globalDrawer: Kirigami.GlobalDrawer {
@@ -73,6 +74,10 @@ Kirigami.ApplicationWindow {
         title: qsTr("Open FATX Image")
         nameFilters: [qsTr("Disk and partition images (*.img *.bin *.fatx *.raw *.dd)"), qsTr("All files (*)")]
         onAccepted: FileBrowser.openFatxImage(selectedFile)
+    }
+
+    DrivesDialog {
+        id: drivesDialog
     }
 
     // Shared by the browser toolbar, context menu and details page.
@@ -221,6 +226,10 @@ Kirigami.ApplicationWindow {
 
     function openFatxDialog() {
         fatxDialog.open();
+    }
+
+    function openDriveDialog() {
+        drivesDialog.open();
     }
 
     function confirmUnlock(row, name, device, isDrive) {

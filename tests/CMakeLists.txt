@@ -2,6 +2,10 @@ add_executable(core_tests core_tests.cpp)
 target_link_libraries(core_tests PRIVATE unnamed_core)
 add_test(NAME core_tests COMMAND core_tests)
 
+add_executable(drives_tests drives_tests.cpp)
+target_link_libraries(drives_tests PRIVATE unnamed_core)
+add_test(NAME drives_tests COMMAND drives_tests)
+
 if(UNNAMED_WITH_FATX)
     add_executable(fatx_tests fatx_tests.cpp)
     target_link_libraries(fatx_tests PRIVATE unnamed_core)

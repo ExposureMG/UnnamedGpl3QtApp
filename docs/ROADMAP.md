@@ -119,7 +119,24 @@ writing needs an explicit unlock and format needs type-to-confirm.
   other seeds; app: 60 rounds), ASan/UBSan clean.
   Not atomic on power loss: replacing deletes the old file, then renames the
   new one (two directory writes)
-- [ ] Drives
+- [x] Drives on Linux: *Open Drive…* lists whole disks from sysfs (model,
+  size, mounted/in use, read-only; loop devices on request) and flags Xbox
+  360 drives by probing their FATX layout when they are readable without a
+  prompt. A drive opens read-only; each FATX partition becomes a place;
+  *Enable Writing…* (stronger warning for drives) reopens it writable with
+  an exclusive open (refused while mounted). Privileges: `core::DriveAccess`
+  methods tried in order: the user's own rights, then udisks2 `OpenDevice`
+  over D-Bus (sd-bus, `-DUNNAMED_WITH_UDISKS2`, on when libsystemd is found):
+  polkit decides and udisks passes a file descriptor, so the GUI never runs
+  as root. Verified here with a loop device backed by an image: listing,
+  read/write as root, and a non-root user refused by polkit, then allowed by
+  a polkit rule. **Not verified**: a real Xbox 360 drive, the interactive
+  polkit password prompt (no authentication agent here), removable media
+  hot-plug
+- [ ] Drives on Windows (elevated helper, `\\.\PhysicalDriveN`, sector-aligned
+  I/O) and macOS (`authopen` after unmounting): to implement behind
+  `core::DriveAccess`/`BlockDevice`; `listDrives()` returns nothing there yet
+- [ ] Verified against a real drive on all desktops (M1 "done when")
 
 ## Risks
 

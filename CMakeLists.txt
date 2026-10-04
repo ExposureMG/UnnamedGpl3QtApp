@@ -23,7 +23,9 @@ add_library(unnamed_core STATIC
     include/core/LocalFileSystem.hpp
     include/core/FileSystemRegistry.hpp
     include/core/BlockDevice.hpp
+    include/core/Drives.hpp
     src/core/BlockDevice.cpp
+    src/core/Drives.cpp
     src/core/Stream.cpp
     src/core/Transfer.cpp
     src/core/FileSystem.cpp
@@ -33,6 +35,24 @@ add_library(unnamed_core STATIC
 )
 target_include_directories(unnamed_core PUBLIC include)
 target_compile_features(unnamed_core PUBLIC cxx_std_20)
+
+# Linux: drives the user may not open directly are opened through udisks2
+# (polkit asks for permission and udisks hands back a file descriptor).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(SYSTEMD QUIET IMPORTED_TARGET libsystemd)
+    endif()
+    option(UNNAMED_WITH_UDISKS2 "Open drives through udisks2 (needs libsystemd's sd-bus)" ${SYSTEMD_FOUND})
+    if(UNNAMED_WITH_UDISKS2)
+        if(NOT SYSTEMD_FOUND)
+            message(FATAL_ERROR "UNNAMED_WITH_UDISKS2=ON needs libsystemd (libsystemd-dev)")
+        endif()
+        target_sources(unnamed_core PRIVATE src/core/UDisks2.cpp)
+        target_link_libraries(unnamed_core PRIVATE PkgConfig::SYSTEMD)
+        target_compile_definitions(unnamed_core PRIVATE UNNAMED_WITH_UDISKS2=1)
+    endif()
+endif()
 
 # --- optional backends --------------------------------------------------------
 if(UNNAMED_WITH_FATX)
@@ -76,6 +96,7 @@ if(UNNAMED_BUILD_APP)
         QML_FILES
             QML/Main.qml
             QML/components/DetailsView.qml
+            QML/components/DrivesDialog.qml
             QML/components/FileGridView.qml
             QML/components/FileListView.qml
             QML/components/ItemActions.qml

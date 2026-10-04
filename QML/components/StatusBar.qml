@@ -16,6 +16,7 @@ QQC2.ToolBar {
     signal openFolderRequested
     signal openDemoRequested
     signal openFatxRequested
+    signal openDriveRequested
 
     position: QQC2.ToolBar.Header
 
@@ -99,6 +100,13 @@ QQC2.ToolBar {
                     visible: FileBrowser.fatxAvailable
                     height: visible ? implicitHeight : 0
                     onTriggered: root.openFatxRequested()
+                }
+                QQC2.MenuItem {
+                    text: qsTr("Open Drive…")
+                    icon.name: "drive-removable-media"
+                    visible: FileBrowser.drivesAvailable
+                    height: visible ? implicitHeight : 0
+                    onTriggered: root.openDriveRequested()
                 }
                 QQC2.MenuItem {
                     text: qsTr("Open Demo (sample data)")

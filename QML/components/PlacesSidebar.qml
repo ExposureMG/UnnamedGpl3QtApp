@@ -50,7 +50,7 @@ ColumnLayout {
             width: ListView.view.width
             highlighted: isCurrent
             contentItem: Kirigami.IconTitleSubtitle {
-                icon.name: place.kind === "Local" ? "folder" : place.kind === "Demo" ? "applications-development" : "drive-harddisk"
+                icon.name: place.kind === "Local" ? "folder" : place.kind === "Demo" ? "applications-development" : place.isDrive ? "drive-removable-media" : "drive-harddisk"
                 title: place.name
                 subtitle: place.busy ? qsTr("Opening…") : place.subtitle
                 selected: place.highlighted
@@ -162,6 +162,14 @@ ColumnLayout {
         text: qsTr("Open FATX Image…")
         icon.name: "drive-harddisk"
         onClicked: root.openFatxRequested()
+    }
+
+    QQC2.ToolButton {
+        Layout.fillWidth: true
+        visible: FileBrowser.drivesAvailable
+        text: qsTr("Open Drive…")
+        icon.name: "drive-removable-media"
+        onClicked: applicationWindow().openDriveDialog()
     }
 
     QQC2.ToolButton {

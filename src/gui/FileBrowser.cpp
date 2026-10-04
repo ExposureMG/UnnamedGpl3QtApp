@@ -3,6 +3,8 @@
 #ifdef UNNAMED_WITH_FATX
 #include "core/FatxFileSystem.hpp"
 #endif
+#include "core/Drives.hpp"
+#include "core/Format.hpp"
 #include "core/LocalFileSystem.hpp"
 #include "core/PathUtil.hpp"
 #include "core/Transfer.hpp"
@@ -75,6 +77,8 @@ bool FileBrowser::fatxAvailable() const {
     return false;
 #endif
 }
+
+bool FileBrowser::drivesAvailable() const { return fatxAvailable() && core::drivesSupported(); }
 
 bool FileBrowser::has(core::Capability cap) const {
     const auto rt = runtime();
@@ -217,15 +221,35 @@ void FileBrowser::insertMount(Mount mount) {
 }
 
 void FileBrowser::openFatxImage(const QUrl& file) {
-#ifdef UNNAMED_WITH_FATX
     const QString hostPath = file.toLocalFile();
-    const QString fileName = QFileInfo(hostPath).fileName();
+    openFatxDevice(hostPath, QFileInfo(hostPath).fileName(), false);
+}
+
+void FileBrowser::openDrive(const QString& path) {
+    QString name = path;
+    for (const QVariant& d : m_drives) {
+        const QVariantMap drive = d.toMap();
+        if (drive.value(QStringLiteral("path")).toString() == path && !drive.value(QStringLiteral("model")).toString().isEmpty())
+            name = QStringLiteral("%1 (%2)").arg(drive.value(QStringLiteral("model")).toString(), path);
+    }
+    openFatxDevice(path, name, true);
+}
+
+void FileBrowser::openFatxDevice(const QString& hostPath, const QString& displayName, bool isDrive) {
+#ifdef UNNAMED_WITH_FATX
     for (int i = 0; i < m_mounts->count(); ++i) {
         if (m_mounts->at(i).kind == QStringLiteral("FATX") && m_mounts->at(i).hostPath == hostPath) {
             selectMount(i); // already open
             return;
         }
     }
+
+    // A drive or image file, read-only or writable.
+    using Opener = std::function<core::Result<std::shared_ptr<core::BlockDevice>>(bool)>;
+    const Opener openDevice = [hostPath, isDrive](bool writable) {
+        return isDrive ? core::openDrive(hostPath.toStdString(), writable)
+                       : core::openImageFile(toHostPath(hostPath), writable);
+    };
 
     // Opening reads the whole directory tree: do it in the background.
     struct Opened {
@@ -234,18 +258,19 @@ void FileBrowser::openFatxImage(const QUrl& file) {
     };
     auto result = std::make_shared<Opened>();
     auto cancel = std::make_shared<std::atomic_bool>(false);
-    const int id = m_jobs->add(tr("Open %1").arg(fileName), this, cancel);
-    m_openPool.start([this, id, hostPath, fileName, result] {
-        auto device = core::openImageFile(toHostPath(hostPath), false);
+    const int id = m_jobs->add(tr("Open %1").arg(displayName), this, cancel);
+    m_openPool.start([this, id, hostPath, displayName, isDrive, openDevice, result] {
+        auto device = openDevice(false);
         if (!device) {
             result->error = QString::fromStdString(device.status().message);
         } else {
             const auto partitions = core::probeFatx(device.value());
             if (partitions.empty())
-                result->error = tr("No FATX filesystem found in %1").arg(fileName);
+                result->error = tr("No FATX filesystem found on %1").arg(displayName);
             for (const core::FatxPartition& p : partitions) {
                 const QString partName = QString::fromStdString(p.name);
-                const QString name = partitions.size() == 1 ? fileName : QStringLiteral("%1 – %2").arg(fileName, partName);
+                const QString name =
+                    partitions.size() == 1 ? displayName : QStringLiteral("%1 – %2").arg(displayName, partName);
                 auto fs = core::openFatx(device.value(), p, false, name.toStdString());
                 if (!fs) {
                     result->error = QString::fromStdString(fs.status().message);
@@ -256,10 +281,12 @@ void FileBrowser::openFatxImage(const QUrl& file) {
                 mount.kind = QStringLiteral("FATX");
                 mount.hostPath = hostPath;
                 mount.detail = QString::fromStdString(p.table + "/" + p.partition);
-                mount.subtitle = tr("FATX · %1").arg(partitions.size() == 1 ? fileName : partName);
+                mount.subtitle = isDrive ? tr("FATX drive · %1").arg(partName)
+                                         : tr("FATX · %1").arg(partitions.size() == 1 ? displayName : partName);
+                mount.isDrive = isDrive;
                 mount.runtime = std::make_shared<MountRuntime>(std::move(fs.value()));
-                mount.reopen = [hostPath, p, name](bool writable) -> core::Result<std::unique_ptr<core::FileSystem>> {
-                    auto dev = core::openImageFile(toHostPath(hostPath), writable);
+                mount.reopen = [openDevice, p, name](bool writable) -> core::Result<std::unique_ptr<core::FileSystem>> {
+                    auto dev = openDevice(writable);
                     if (!dev)
                         return dev.status();
                     return core::openFatx(dev.value(), p, writable, name.toStdString());
@@ -279,9 +306,63 @@ void FileBrowser::openFatxImage(const QUrl& file) {
             Qt::QueuedConnection);
     });
 #else
-    Q_UNUSED(file);
-    setError(tr("This build has no FATX support"));
+    Q_UNUSED(isDrive);
+    setError(tr("This build has no FATX support (%1)").arg(displayName.isEmpty() ? hostPath : displayName));
 #endif
+}
+
+void FileBrowser::refreshDrives(bool includeLoop) {
+    if (m_drivesLoading)
+        return;
+    m_drivesLoading = true;
+    emit drivesChanged();
+    auto list = std::make_shared<QVariantList>();
+    m_openPool.start([this, includeLoop, list] {
+        for (const core::DriveInfo& d : core::listDrives(includeLoop)) {
+            QString layout;
+            QString note;
+            bool xbox = false;
+#ifdef UNNAMED_WITH_FATX
+            // Look inside only when no permission is needed (no password prompt
+            // just for listing); read-only, a few sectors.
+            if (d.readable) {
+                if (auto dev = core::openDeviceNode(d.path, false)) {
+                    const auto parts = core::probeFatx(dev.value());
+                    if (!parts.empty()) {
+                        layout = QString::fromStdString(parts.front().tableName);
+                        xbox = parts.front().table == "hd" || parts.front().table == "kit";
+                        note = tr("%n FATX partition(s)", nullptr, int(parts.size()));
+                    }
+                }
+            } else {
+                note = tr("Opening asks for permission");
+            }
+#endif
+            if (d.inUse)
+                note = note.isEmpty() ? tr("In use (mounted)") : note + QStringLiteral(" · ") + tr("in use (mounted)");
+            QString model = QString::fromStdString(d.vendor.empty() ? d.model : d.vendor + " " + d.model).trimmed();
+            list->append(QVariantMap{
+                {QStringLiteral("path"), QString::fromStdString(d.path)},
+                {QStringLiteral("model"), model},
+                {QStringLiteral("size"), QString::fromStdString(core::humanSize(d.size)).section(QLatin1Char(' '), 0, 1)},
+                {QStringLiteral("removable"), d.removable},
+                {QStringLiteral("readOnly"), d.readOnly},
+                {QStringLiteral("inUse"), d.inUse},
+                {QStringLiteral("readable"), d.readable},
+                {QStringLiteral("xbox"), xbox},
+                {QStringLiteral("layout"), layout},
+                {QStringLiteral("note"), note},
+            });
+        }
+        QMetaObject::invokeMethod(
+            this,
+            [this, list] {
+                m_drives = *list;
+                m_drivesLoading = false;
+                emit drivesChanged();
+            },
+            Qt::QueuedConnection);
+    });
 }
 
 int FileBrowser::indexOfRuntime(const MountRuntime* runtime) const {

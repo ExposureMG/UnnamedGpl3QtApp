@@ -39,6 +39,11 @@ class FileBrowser : public QObject {
     Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
     // Built with the FATX backend (-DUNNAMED_WITH_FATX=ON).
     Q_PROPERTY(bool fatxAvailable READ fatxAvailable CONSTANT)
+    // Physical drives can be listed and opened on this platform (Linux for now).
+    Q_PROPERTY(bool drivesAvailable READ drivesAvailable CONSTANT)
+    // [{path, model, size, removable, readOnly, inUse, readable, xbox, layout, note}]
+    Q_PROPERTY(QVariantList drives READ drives NOTIFY drivesChanged)
+    Q_PROPERTY(bool drivesLoading READ drivesLoading NOTIFY drivesChanged)
 
     // Selection (by name within the current folder) and capability gating.
     Q_PROPERTY(QString selectedName READ selectedName NOTIFY selectionChanged)
@@ -74,6 +79,9 @@ public:
     QString statusText() const;
     QString errorMessage() const { return m_errorMessage; }
     bool fatxAvailable() const;
+    bool drivesAvailable() const;
+    QVariantList drives() const { return m_drives; }
+    bool drivesLoading() const { return m_drivesLoading; }
 
     QString selectedName() const { return m_selectedName; }
     bool hasSelection() const { return !m_selectedName.isEmpty(); }
@@ -97,6 +105,12 @@ public:
     // Opens a FATX image read-only; every FATX partition in it (an Xbox 360
     // disk has several) becomes a place.
     Q_INVOKABLE void openFatxImage(const QUrl& file);
+    // Lists the drives in the background (drivesChanged). Loop devices (images
+    // attached with losetup) only on request.
+    Q_INVOKABLE void refreshDrives(bool includeLoop = false);
+    // Opens a drive read-only (the system may ask for permission); each FATX
+    // partition on it becomes a place.
+    Q_INVOKABLE void openDrive(const QString& path);
     Q_INVOKABLE void selectMount(int index);
     Q_INVOKABLE void closeMount(int index);
 
@@ -136,6 +150,7 @@ signals:
     void errorOccurred(const QString& message); // every failure, even a repeated one
     void notice(const QString& message); // transient success message
     void reportReady(const QString& title, const QString& text); // e.g. a health check result
+    void drivesChanged();
 
 private:
     // Handed to background work: cancellation flag and throttled progress.
@@ -152,6 +167,8 @@ private:
     QString selectedPath() const;
     void addMount(const QString& kind, const QString& hostPath, const QString& name);
     void insertMount(Mount mount);
+    // Opens every FATX partition on a device in the background and adds them as places.
+    void openFatxDevice(const QString& hostPath, const QString& displayName, bool isDrive);
     int indexOfRuntime(const MountRuntime* runtime) const;
     void runtimeReplaced(int index);
     void navigate(const QString& path, const QString& selectAfter = {});
@@ -175,6 +192,8 @@ private:
     quint64 m_navGeneration = 0;     // drops listing results that were superseded
     quint64 m_detailsGeneration = 0; // same for details
     QString m_errorMessage;
+    QVariantList m_drives;
+    bool m_drivesLoading = false;
     QThreadPool m_openPool; // opens images off the UI thread; waited for on destruction
 };
 

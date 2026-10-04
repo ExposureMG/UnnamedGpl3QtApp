@@ -13,7 +13,8 @@ namespace unnamed::core {
 // Random-access storage a filesystem backend (FATX, later STFS/NAND) lives on:
 // a disk image now, a physical drive (Linux block device, Windows
 // \\.\PhysicalDriveN, macOS /dev/rdiskN) or an Android file descriptor later.
-// Like FileSystem, a device is used by one thread at a time.
+// Image files are used by one thread at a time; a drive may be shared by the
+// places of its partitions, so drive implementations allow concurrent calls.
 class BlockDevice {
 public:
     virtual ~BlockDevice() = default;
