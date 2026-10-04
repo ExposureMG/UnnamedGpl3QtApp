@@ -289,6 +289,8 @@ void damagedImages() {
     std::mt19937 gen(5);
     for (int i = 0; i < 40; ++i) {
         const fs::path cut = scratch / "cut.img";
+        if (full.empty())
+            break;
         auto part = std::vector<char>(full.begin(), full.begin() + static_cast<long>(gen() % full.size()));
         writeFile(cut, part);
         auto t = FileSystemRegistry::withBuiltins().open("FATX", cut, error);
@@ -583,6 +585,82 @@ void formatAndRepair() {
     CHECK(!ro->repair(report) && !ro->format("X"));
 }
 
+// Replace overwrites in place: same directory entry index, same first cluster.
+void replaceInPlace() {
+    const fs::path image = scratch / "replace.img";
+    auto dev = newImage("replace.img", 16ull << 20);
+    auto fsys = dev ? openOn(dev, true) : nullptr;
+    CHECK(fsys);
+    if (!fsys)
+        return;
+    LocalFileSystem host(scratch);
+    auto put = [&](const std::string& path, const std::vector<char>& data, bool overwrite) {
+        writeFile(scratch / "replace-src.bin", data);
+        TransferOptions o;
+        o.overwrite = overwrite;
+        return copyTree(host, "/replace-src.bin", *fsys, path, o);
+    };
+    const auto old = randomData(100000, 1);
+    CHECK(put("/before.bin", randomData(10, 2), false));
+    CHECK(put("/game.xex", old, false));
+    CHECK(put("/after.bin", randomData(10, 3), false));
+    Details d;
+    CHECK(fsys->describe("/game.xex", d));
+    const std::string firstCluster = details(d, "First cluster");
+    const std::string room = details(d, "Replacement can be up to");
+    CHECK(!firstCluster.empty() && room.find("bytes") != std::string::npos);
+    auto indexOf = [&](const std::string& name) {
+        std::vector<Entry> entries;
+        fsys->list("/", entries);
+        for (std::size_t i = 0; i < entries.size(); ++i)
+            if (entries[i].name == name)
+                return static_cast<int>(i);
+        return -1;
+    };
+    const int index = indexOf("game.xex");
+
+    // smaller, through copyTree with overwrite (the Replace action)
+    const auto smaller = randomData(60000, 4);
+    CHECK(put("/game.xex", smaller, true));
+    CHECK(readAll(*fsys, "/game.xex") == smaller);
+    CHECK(fsys->describe("/game.xex", d) && details(d, "First cluster") == firstCluster);
+    CHECK(indexOf("game.xex") == index);
+
+    // the same name in another case replaces the same file
+    const auto same = randomData(60000, 5);
+    CHECK(put("/GAME.XEX", same, true));
+    CHECK(readAll(*fsys, "/game.xex") == same && indexOf("game.xex") == index);
+
+    // too big: refused with the sizes, the file is untouched (known size, then streamed)
+    const auto big = randomData(200000, 6);
+    const Status tooBig = put("/game.xex", big, true);
+    CHECK(!tooBig);
+    CHECK(tooBig.message.find("at most") != std::string::npos && tooBig.message.find("in place") != std::string::npos);
+    std::cout << "replace error text: " << tooBig.message << "\n";
+    {
+        auto sink = fsys->openWrite("/game.xex", std::nullopt, true);
+        CHECK(sink);
+        bool failed = false;
+        for (std::size_t off = 0; sink && off < big.size() && !failed; off += 50000)
+            failed = !sink.value()->write(big.data() + off, 50000);
+        CHECK(failed);
+    }
+    CHECK(readAll(*fsys, "/game.xex") == same);
+    // dropped before finish(): untouched
+    {
+        auto sink = fsys->openWrite("/game.xex", 100, true);
+        CHECK(sink && sink.value()->write(big.data(), 100));
+    }
+    CHECK(readAll(*fsys, "/game.xex") == same);
+
+    // empty replacement keeps the entry
+    CHECK(put("/game.xex", {}, true));
+    Entry e;
+    CHECK(fsys->stat("/game.xex", e) && e.size == 0 && indexOf("game.xex") == index);
+    fsys.reset();
+    CHECK(clean(dev, image));
+}
+
 // Damaged images: errors, no crash (run under ASan/UBSan in CI).
 void corruptedImagesDoNotCrash() {
     auto dev = newImage("fuzz-src.img", 4ull << 20);
@@ -646,7 +724,8 @@ void writeIntoImageMadeByTheTools() {
 } // namespace
 
 int main() {
-    scratch = fs::temp_directory_path() / "unnamed_fatx_tests";
+    // one folder per run: several builds' tests may run at the same time
+    scratch = fs::temp_directory_path() / ("unnamed_fatx_tests-" + std::to_string(std::random_device{}()));
     fs::remove_all(scratch);
     fs::create_directories(scratch);
 
@@ -656,6 +735,7 @@ int main() {
     namesAndErrors();
     noSpaceLeft();
     formatAndRepair();
+    replaceInPlace();
     corruptedImagesDoNotCrash();
 
     // need the fatx command-line tool (mkfs.fatx, fsck.fatx, label.fatx)

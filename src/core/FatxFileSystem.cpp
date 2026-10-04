@@ -3,8 +3,13 @@
 
 #include "volume.hpp" // fatx_core (extern/FATX/src)
 
+#include "core/PathUtil.hpp"
+
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <fstream>
+#include <random>
 #include <cstdio>
 #include <span>
 #include <system_error>
@@ -198,9 +203,13 @@ public:
         out.groups.push_back(std::move(general));
 
         if (!root) {
-            out.groups.push_back({"FATX entry",
-                                  {{"Attributes", attributes(e)},
-                                   {"First cluster", e.first_cluster ? hex(e.first_cluster, 8) : "None"}}});
+            PropertyGroup entry{"FATX entry",
+                                {{"Attributes", attributes(e)},
+                                 {"First cluster", e.first_cluster ? hex(e.first_cluster, 8) : "None"}}};
+            std::uint64_t room = 0;
+            if (!e.directory && m_volume->replace_capacity(path, &room) == 0)
+                entry.items.push_back({"Replacement can be up to", humanSize(room)});
+            out.groups.push_back(std::move(entry));
         }
         return Status::success();
     }
@@ -276,6 +285,8 @@ public:
 
     Result<std::unique_ptr<ByteSink>> openWrite(const std::string& path, std::optional<std::uint64_t> size,
                                                 bool overwrite) override;
+    // Overwrite an existing file in place (see FatxReplaceSink).
+    Result<std::unique_ptr<ByteSink>> openReplace(const std::string& path, std::optional<std::uint64_t> size);
 
     Status makeDirectory(const std::string& path) override {
         m_log->lastError.clear();
@@ -525,6 +536,111 @@ private:
     bool m_done = false;
 };
 
+// Replacing an existing file happens in place (FATX::volume::replace): the
+// file keeps its directory entry index and its clusters, so the new contents
+// must fit the clusters it has. Nothing on the device changes before finish():
+// the data is staged in a temporary host file, then written over the old file
+// in one pass. That final pass is not atomic: a crash or I/O error during it
+// leaves the file partly old, partly new.
+class FatxReplaceSink final : public ByteSink {
+public:
+    FatxReplaceSink(FatxFileSystem& fs, std::string target, std::uint64_t capacity, std::filesystem::path staging,
+                    std::fstream stream)
+        : m_fs(fs), m_target(std::move(target)), m_capacity(capacity), m_staging(std::move(staging)),
+          m_stream(std::move(stream)) {}
+
+    ~FatxReplaceSink() override {
+        m_stream.close();
+        std::error_code ec;
+        std::filesystem::remove(m_staging, ec);
+    }
+
+    Status write(const void* data, std::size_t size) override {
+        if (m_done)
+            return Status::failure("Cannot write " + m_target + ": already finished");
+        if (m_written + size > m_capacity)
+            return Status::failure(tooBig(m_target, m_written + size, m_capacity, true));
+        m_stream.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+        if (!m_stream)
+            return Status::failure("Cannot write " + m_target + ": the temporary copy in " +
+                                   pathToUtf8(m_staging.parent_path()) + " failed (disk full?)");
+        m_written += size;
+        return Status::success();
+    }
+
+    Status finish() override {
+        if (m_done)
+            return Status::success();
+        fatx::volume* v = m_fs.volume();
+        if (!v)
+            return Status::failure("Cannot write " + m_target + ": the filesystem is closed");
+        m_stream.flush();
+        if (!m_stream)
+            return Status::failure("Cannot write " + m_target + ": the temporary copy failed");
+        // the old file is untouched up to here
+        if (int err = v->replace(m_target, m_written)) {
+            if (err == EFBIG) {
+                std::uint64_t room = 0;
+                void(v->replace_capacity(m_target, &room));
+                return Status::failure(tooBig(m_target, m_written, room, false));
+            }
+            return m_fs.fail(err, "Cannot replace " + m_target);
+        }
+        m_stream.seekg(0);
+        std::vector<char> buffer(1 << 20);
+        for (std::uint64_t done = 0; done < m_written;) {
+            const auto n = static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), m_written - done));
+            m_stream.read(buffer.data(), static_cast<std::streamsize>(n));
+            if (!m_stream)
+                return Status::failure("Cannot replace " + m_target + ": reading the temporary copy failed; the file "
+                                       "is partly overwritten");
+            if (int err = v->write(m_target, done, std::span(reinterpret_cast<const std::byte*>(buffer.data()), n)))
+                return m_fs.fail(err, "Cannot replace " + m_target + " (the file is partly overwritten)");
+            done += n;
+        }
+        m_done = true;
+        return m_fs.flushed(m_target);
+    }
+
+    static std::string tooBig(const std::string& target, std::uint64_t size, std::uint64_t room, bool atLeast) {
+        return "Cannot replace " + target + ": the new file is " + (atLeast ? "at least " : "") + humanSize(size) +
+               ", but a replacement can be at most " + humanSize(room) +
+               ". FATX replaces a file in place, within the clusters it already has; delete it and add the new "
+               "file instead.";
+    }
+
+private:
+    FatxFileSystem& m_fs;
+    std::string m_target;
+    std::uint64_t m_capacity;
+    std::filesystem::path m_staging;
+    std::fstream m_stream;
+    std::uint64_t m_written = 0;
+    bool m_done = false;
+};
+
+Result<std::unique_ptr<ByteSink>> FatxFileSystem::openReplace(const std::string& path,
+                                                              std::optional<std::uint64_t> size) {
+    std::uint64_t room = 0;
+    if (int err = m_volume->replace_capacity(path, &room))
+        return fail(err, "Cannot replace " + path);
+    if (size && *size > room)
+        return Status::failure(FatxReplaceSink::tooBig(path, *size, room, false));
+    // stage the new contents on the host
+    static std::atomic<unsigned> counter{0};
+    std::error_code ec;
+    const auto dir = std::filesystem::temp_directory_path(ec);
+    if (ec)
+        return Status::failure("Cannot replace " + path + ": no temporary folder");
+    const auto staging = dir / ("unnamed-fatx-replace-" + std::to_string(std::random_device{}()) + "-" +
+                                std::to_string(counter++) + ".part");
+    std::fstream stream(staging, std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
+    if (!stream.is_open())
+        return Status::failure("Cannot replace " + path + ": cannot create a temporary file in " + pathToUtf8(dir));
+    return std::unique_ptr<ByteSink>(
+        std::make_unique<FatxReplaceSink>(*this, path, room, staging, std::move(stream)));
+}
+
 bool sameName(const std::string& a, const std::string& b) {
     return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
                return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
@@ -556,6 +672,7 @@ Result<std::unique_ptr<ByteSink>> FatxFileSystem::openWrite(const std::string& p
             return Status::failure("Cannot replace the volume label file " + path);
         if (!overwrite)
             return fail(EEXIST, "Cannot write " + path);
+        return openReplace(joinPath(folder, e.name), size);
     }
     if (size && *size > 0xFFFFFFFFull)
         return fail(EFBIG, "Cannot write " + path);
