@@ -4,9 +4,9 @@ namespace unnamed::gui {
 
 MountModel::MountModel(QObject* parent) : QAbstractListModel(parent) {}
 
-int MountModel::indexOf(const QString& kind, const QString& hostPath) const {
+int MountModel::indexOf(const QString& kind, const QString& hostPath, const QString& detail) const {
     for (size_t i = 0; i < m_mounts.size(); ++i) {
-        if (m_mounts[i].kind == kind && m_mounts[i].hostPath == hostPath)
+        if (m_mounts[i].kind == kind && m_mounts[i].hostPath == hostPath && m_mounts[i].detail == detail)
             return static_cast<int>(i);
     }
     return -1;
@@ -53,8 +53,12 @@ QVariant MountModel::data(const QModelIndex& index, int role) const {
     case Qt::DisplayRole:
     case NameRole: return m.name;
     case KindRole: return m.kind;
-    case SubtitleRole: return m.hostPath.isEmpty() ? m.kind : m.hostPath;
+    case SubtitleRole: return !m.subtitle.isEmpty() ? m.subtitle : m.hostPath.isEmpty() ? m.kind : m.hostPath;
     case IsCurrentRole: return index.row() == m_current;
+    case CanCheckRole: return core::hasCapability(m.runtime->capabilities, core::Capability::HealthCheck);
+    case WritableRole:
+        return core::hasCapability(m.runtime->capabilities, core::Capability::Inject) ||
+               core::hasCapability(m.runtime->capabilities, core::Capability::Remove);
     }
     return {};
 }
@@ -65,6 +69,8 @@ QHash<int, QByteArray> MountModel::roleNames() const {
         {KindRole, "kind"},
         {SubtitleRole, "subtitle"},
         {IsCurrentRole, "isCurrent"},
+        {CanCheckRole, "canCheck"},
+        {WritableRole, "writable"},
     };
 }
 

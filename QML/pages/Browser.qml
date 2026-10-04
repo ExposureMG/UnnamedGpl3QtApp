@@ -71,6 +71,7 @@ Kirigami.Page {
             Layout.preferredWidth: Kirigami.Units.gridUnit * 13
             onPropertiesRequested: root.app.showDetails(true)
             onOpenFolderRequested: root.app.openFolderDialog()
+            onOpenFatxRequested: root.app.openFatxDialog()
         }
 
         Kirigami.Separator {
@@ -286,7 +287,7 @@ Kirigami.Page {
                     visible: !FileBrowser.isOpen
                     icon.name: "folder-open"
                     text: qsTr("Nothing open")
-                    explanation: qsTr("Open a folder, or try the demo filesystem to explore the interface.")
+                    explanation: FileBrowser.fatxAvailable ? qsTr("Open a folder or an Xbox 360 FATX image, or try the demo filesystem to explore the interface.") : qsTr("Open a folder, or try the demo filesystem to explore the interface.")
                     helpfulAction: Kirigami.Action {
                         text: qsTr("Open Folder…")
                         icon.name: "folder-open"
@@ -356,6 +357,10 @@ Kirigami.Page {
             onOpenFolderRequested: {
                 sidebarDrawer.close();
                 root.app.openFolderDialog();
+            }
+            onOpenFatxRequested: {
+                sidebarDrawer.close();
+                root.app.openFatxDialog();
             }
         }
     }

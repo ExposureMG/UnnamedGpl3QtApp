@@ -15,6 +15,7 @@ QQC2.ToolBar {
     signal backRequested
     signal openFolderRequested
     signal openDemoRequested
+    signal openFatxRequested
 
     position: QQC2.ToolBar.Header
 
@@ -91,6 +92,13 @@ QQC2.ToolBar {
                     text: qsTr("Open Folder…")
                     icon.name: "folder-open"
                     onTriggered: root.openFolderRequested()
+                }
+                QQC2.MenuItem {
+                    text: qsTr("Open FATX Image…")
+                    icon.name: "drive-harddisk"
+                    visible: FileBrowser.fatxAvailable
+                    height: visible ? implicitHeight : 0
+                    onTriggered: root.openFatxRequested()
                 }
                 QQC2.MenuItem {
                     text: qsTr("Open Demo (sample data)")

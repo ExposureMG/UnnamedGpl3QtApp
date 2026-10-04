@@ -11,6 +11,7 @@ ColumnLayout {
     signal propertiesRequested
     signal placeSelected
     signal openFolderRequested
+    signal openFatxRequested
 
     spacing: 0
 
@@ -37,11 +38,12 @@ ColumnLayout {
             required property string kind
             required property string subtitle
             required property bool isCurrent
+            required property bool canCheck
 
             width: ListView.view.width
             highlighted: isCurrent
             contentItem: Kirigami.IconTitleSubtitle {
-                icon.name: place.kind === "Local" ? "folder" : "drive-harddisk"
+                icon.name: place.kind === "Local" ? "folder" : place.kind === "Demo" ? "applications-development" : "drive-harddisk"
                 title: place.name
                 subtitle: place.subtitle
                 selected: place.highlighted
@@ -73,9 +75,11 @@ ColumnLayout {
         id: placeMenu
 
         property int row: -1
+        property bool canCheck: false
 
         function openFor(item) {
             row = item.index;
+            canCheck = item.canCheck;
             popup();
         }
 
@@ -87,6 +91,13 @@ ColumnLayout {
                 FileBrowser.inspectFileSystem = true;
                 root.propertiesRequested();
             }
+        }
+        QQC2.MenuItem {
+            text: qsTr("Check Filesystem")
+            icon.name: "checkmark"
+            visible: placeMenu.canCheck
+            height: visible ? implicitHeight : 0
+            onTriggered: FileBrowser.checkMount(placeMenu.row)
         }
         QQC2.MenuItem {
             text: qsTr("Close")
@@ -104,6 +115,14 @@ ColumnLayout {
         text: qsTr("Open Folder…")
         icon.name: "folder-open"
         onClicked: root.openFolderRequested()
+    }
+
+    QQC2.ToolButton {
+        Layout.fillWidth: true
+        visible: FileBrowser.fatxAvailable
+        text: qsTr("Open FATX Image…")
+        icon.name: "drive-harddisk"
+        onClicked: root.openFatxRequested()
     }
 
     QQC2.ToolButton {

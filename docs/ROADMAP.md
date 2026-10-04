@@ -96,6 +96,20 @@ writing needs an explicit unlock and format needs type-to-confirm.
 - [ ] App CI on Windows/macOS/Android (needs a KDE Frameworks toolchain; part of M5)
 - [ ] Android build spike
 
+### M1 status (FATX)
+
+- [x] FATX fork: `fatx_core` library target without FUSE or Boost.Program_options,
+  log sink instead of stdout, per-thread contexts (several volumes at once),
+  pluggable I/O (`fatx::io_backend`) and an embedding API (`volume.hpp`).
+  Fork branch `fatx-core` of ExposureMG/FATX, pinned by `extern/FATX`
+- [x] Read-only FATX backend (`FatxFileSystem`, registry kind `FATX`): browse,
+  stat, details (entry attributes, clusters, label, serial, geometry,
+  capacity), extract, health check (fsck dry run). Partition images and Xbox 360
+  disk images (each FATX partition becomes a place). GUI: *Open FATX Image…*
+  and *Check Filesystem*. Tested against images made by `mkfs.fatx`
+- [ ] Write support, format
+- [ ] Drives
+
 ## Risks
 
 - **Raw-device safety.** FATX writes and format can destroy a console drive:

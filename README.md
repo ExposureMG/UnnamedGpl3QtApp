@@ -29,6 +29,12 @@ default until their milestone lands, see [docs/ROADMAP.md](docs/ROADMAP.md)):
 `-DUNNAMED_WITH_FATX=ON`, `_XEX`, `_STFS` (run `git submodule update --init
 extern/<name>` first).
 
+FATX (`-DUNNAMED_WITH_FATX=ON`) needs CMake >= 3.25 and the Boost headers
+(e.g. `libboost-dev`); no FUSE. With Boost.Program_options installed
+(`libboost-program-options-dev`) the FATX command-line tool is built too and
+the FATX tests use its `mkfs.fatx`/`fsck.fatx` modes to make and check images;
+without it those tests are skipped.
+
 # Project layout
 
 ```
@@ -39,6 +45,8 @@ include/core, src/core   GUI-free library (unnamed_core, std C++ only)
   LocalFileSystem          host directory backend
   DemoFileSystem           read-only *sample data* filesystem (XEX, STFS, ... views)
   FileSystemRegistry       kind -> factory; new backends (FATX, STFS, NAND, ...) register here
+  BlockDevice              random-access storage (image file now, drives later) under a backend
+  FatxFileSystem           Xbox 360 FATX (optional, wraps fatx_core from extern/FATX)
 include/gui, src/gui     C++ glue exposed to QML (talks to core::FileSystem only)
   FileBrowser              singleton: mounts, path, selection, details, operations
                            (all filesystem work runs in cancellable background jobs)

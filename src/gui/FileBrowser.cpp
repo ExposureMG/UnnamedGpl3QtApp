@@ -1,5 +1,8 @@
 #include "gui/FileBrowser.hpp"
 
+#ifdef UNNAMED_WITH_FATX
+#include "core/FatxFileSystem.hpp"
+#endif
 #include "core/LocalFileSystem.hpp"
 #include "core/PathUtil.hpp"
 #include "core/Transfer.hpp"
@@ -52,6 +55,7 @@ FileBrowser::FileBrowser(QObject* parent)
 
 FileBrowser::~FileBrowser() {
     // Stop worker threads before the models they report to go away.
+    m_openPool.waitForDone();
     for (int i = 0; i < m_mounts->count(); ++i) {
         const auto& rt = m_mounts->at(i).runtime;
         m_jobs->cancelAllFor(rt.get());
@@ -62,6 +66,14 @@ FileBrowser::~FileBrowser() {
 
 std::shared_ptr<MountRuntime> FileBrowser::runtime() const {
     return isOpen() ? m_mounts->at(currentMount()).runtime : nullptr;
+}
+
+bool FileBrowser::fatxAvailable() const {
+#ifdef UNNAMED_WITH_FATX
+    return true;
+#else
+    return false;
+#endif
 }
 
 bool FileBrowser::has(core::Capability cap) const {
@@ -195,9 +207,93 @@ void FileBrowser::addMount(const QString& kind, const QString& hostPath, const Q
     mount.kind = kind;
     mount.hostPath = hostPath;
     mount.runtime = std::make_shared<MountRuntime>(std::move(fs));
+    insertMount(std::move(mount));
+}
+
+void FileBrowser::insertMount(Mount mount) {
     m_mounts->add(std::move(mount));
     setError({});
     selectMount(m_mounts->count() - 1);
+}
+
+void FileBrowser::openFatxImage(const QUrl& file) {
+#ifdef UNNAMED_WITH_FATX
+    const QString hostPath = file.toLocalFile();
+    const QString fileName = QFileInfo(hostPath).fileName();
+    for (int i = 0; i < m_mounts->count(); ++i) {
+        if (m_mounts->at(i).kind == QStringLiteral("FATX") && m_mounts->at(i).hostPath == hostPath) {
+            selectMount(i); // already open
+            return;
+        }
+    }
+
+    // Opening reads the whole directory tree: do it in the background.
+    struct Opened {
+        std::vector<Mount> mounts;
+        QString error;
+    };
+    auto result = std::make_shared<Opened>();
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    const int id = m_jobs->add(tr("Open %1").arg(fileName), this, cancel);
+    m_openPool.start([this, id, hostPath, fileName, result] {
+        auto device = core::openImageFile(toHostPath(hostPath), false);
+        if (!device) {
+            result->error = QString::fromStdString(device.status().message);
+        } else {
+            const auto partitions = core::probeFatx(device.value());
+            if (partitions.empty())
+                result->error = tr("No FATX filesystem found in %1").arg(fileName);
+            for (const core::FatxPartition& p : partitions) {
+                const QString partName = QString::fromStdString(p.name);
+                const QString name = partitions.size() == 1 ? fileName : QStringLiteral("%1 – %2").arg(fileName, partName);
+                auto fs = core::openFatx(device.value(), p, false, name.toStdString());
+                if (!fs) {
+                    result->error = QString::fromStdString(fs.status().message);
+                    continue;
+                }
+                Mount mount;
+                mount.name = name;
+                mount.kind = QStringLiteral("FATX");
+                mount.hostPath = hostPath;
+                mount.detail = QString::fromStdString(p.table + "/" + p.partition);
+                mount.subtitle = tr("FATX · %1 · read-only").arg(partitions.size() == 1 ? fileName : partName);
+                mount.runtime = std::make_shared<MountRuntime>(std::move(fs.value()));
+                result->mounts.push_back(std::move(mount));
+            }
+        }
+        QMetaObject::invokeMethod(
+            this,
+            [this, id, result] {
+                m_jobs->finish(id, result->mounts.empty() ? JobModel::Failed : JobModel::Succeeded, result->error);
+                for (Mount& m : result->mounts)
+                    insertMount(std::move(m));
+                if (!result->error.isEmpty())
+                    setError(result->error);
+            },
+            Qt::QueuedConnection);
+    });
+#else
+    Q_UNUSED(file);
+    setError(tr("This build has no FATX support"));
+#endif
+}
+
+void FileBrowser::checkMount(int index) {
+    if (index < 0 || index >= m_mounts->count())
+        return;
+    const auto rt = m_mounts->at(index).runtime;
+    if (!core::hasCapability(rt->capabilities, core::Capability::HealthCheck))
+        return;
+    const QString name = m_mounts->at(index).name;
+    auto report = std::make_shared<std::string>();
+    runJob(tr("Check %1").arg(name), rt,
+           [report](core::FileSystem& fs, const JobContext&) { return fs.healthCheck(*report); },
+           [this, name, report](const core::Status& st) {
+               if (st)
+                   emit reportReady(tr("Health check: %1").arg(name), QString::fromStdString(*report));
+               else
+                   setError(QString::fromStdString(st.message));
+           });
 }
 
 void FileBrowser::selectMount(int index) {

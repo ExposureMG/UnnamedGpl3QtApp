@@ -28,6 +28,7 @@ Kirigami.ApplicationWindow {
         onBackRequested: root.hideDetails()
         onOpenFolderRequested: root.openFolderDialog()
         onOpenDemoRequested: FileBrowser.openDemo()
+        onOpenFatxRequested: root.openFatxDialog()
     }
 
     globalDrawer: Kirigami.GlobalDrawer {
@@ -67,6 +68,13 @@ Kirigami.ApplicationWindow {
         onAccepted: FileBrowser.openFolder(selectedFolder)
     }
 
+    FileDialog {
+        id: fatxDialog
+        title: qsTr("Open FATX Image")
+        nameFilters: [qsTr("Disk and partition images (*.img *.bin *.fatx *.raw *.dd)"), qsTr("All files (*)")]
+        onAccepted: FileBrowser.openFatxImage(selectedFile)
+    }
+
     // Shared by the browser toolbar, context menu and details page.
     ItemActions {
         id: itemActions
@@ -82,6 +90,21 @@ Kirigami.ApplicationWindow {
     Shortcut {
         sequences: [StandardKey.Quit]
         onActivated: Qt.quit()
+    }
+
+    // Results of long operations, e.g. a filesystem health check.
+    Kirigami.Dialog {
+        id: reportDialog
+        property alias text: reportText.text
+        standardButtons: Kirigami.Dialog.Close
+        padding: Kirigami.Units.largeSpacing
+        preferredWidth: Kirigami.Units.gridUnit * 28
+
+        QQC2.Label {
+            id: reportText
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+        }
     }
 
     Kirigami.PromptDialog {
@@ -101,6 +124,11 @@ Kirigami.ApplicationWindow {
         function onNotice(message) {
             root.showPassiveNotification(message);
         }
+        function onReportReady(title, text) {
+            reportDialog.title = title;
+            reportDialog.text = text;
+            reportDialog.open();
+        }
     }
 
     function showError(title, message) {
@@ -111,6 +139,10 @@ Kirigami.ApplicationWindow {
 
     function openFolderDialog() {
         folderDialog.open();
+    }
+
+    function openFatxDialog() {
+        fatxDialog.open();
     }
 
     // The expanded view is a second page in the page row (side by side when

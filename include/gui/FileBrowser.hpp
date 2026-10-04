@@ -6,6 +6,7 @@
 #include "gui/MountModel.hpp"
 
 #include <QObject>
+#include <QThreadPool>
 #include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
@@ -36,6 +37,8 @@ class FileBrowser : public QObject {
     Q_PROPERTY(QVariantList pathSegments READ pathSegments NOTIFY stateChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
     Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
+    // Built with the FATX backend (-DUNNAMED_WITH_FATX=ON).
+    Q_PROPERTY(bool fatxAvailable READ fatxAvailable CONSTANT)
 
     // Selection (by name within the current folder) and capability gating.
     Q_PROPERTY(QString selectedName READ selectedName NOTIFY selectionChanged)
@@ -70,6 +73,7 @@ public:
     QVariantList pathSegments() const;
     QString statusText() const;
     QString errorMessage() const { return m_errorMessage; }
+    bool fatxAvailable() const;
 
     QString selectedName() const { return m_selectedName; }
     bool hasSelection() const { return !m_selectedName.isEmpty(); }
@@ -90,6 +94,9 @@ public:
     // Opening / switching filesystems.
     Q_INVOKABLE void openFolder(const QUrl& folder);
     Q_INVOKABLE void openDemo();
+    // Opens a FATX image read-only; every FATX partition in it (an Xbox 360
+    // disk has several) becomes a place.
+    Q_INVOKABLE void openFatxImage(const QUrl& file);
     Q_INVOKABLE void selectMount(int index);
     Q_INVOKABLE void closeMount(int index);
 
@@ -109,6 +116,8 @@ public:
     Q_INVOKABLE void makeDirectory(const QString& name);
     Q_INVOKABLE void renameSelected(const QString& newName);
     Q_INVOKABLE void refresh();
+    // Filesystem health check of a place (read-only); the result arrives as reportReady().
+    Q_INVOKABLE void checkMount(int index);
 
 signals:
     void stateChanged();
@@ -119,6 +128,7 @@ signals:
     void errorMessageChanged();
     void errorOccurred(const QString& message); // every failure, even a repeated one
     void notice(const QString& message); // transient success message
+    void reportReady(const QString& title, const QString& text); // e.g. a health check result
 
 private:
     // Handed to background work: cancellation flag and throttled progress.
@@ -134,6 +144,7 @@ private:
     bool has(core::Capability cap) const;
     QString selectedPath() const;
     void addMount(const QString& kind, const QString& hostPath, const QString& name);
+    void insertMount(Mount mount);
     void navigate(const QString& path, const QString& selectAfter = {});
     void setLoading(bool loading);
     void setSelectedName(const QString& name);
@@ -155,6 +166,7 @@ private:
     quint64 m_navGeneration = 0;     // drops listing results that were superseded
     quint64 m_detailsGeneration = 0; // same for details
     QString m_errorMessage;
+    QThreadPool m_openPool; // opens images off the UI thread; waited for on destruction
 };
 
 } // namespace unnamed::gui

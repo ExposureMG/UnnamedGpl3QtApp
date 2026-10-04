@@ -2,7 +2,11 @@
 #include "core/DemoFileSystem.hpp"
 #include "core/LocalFileSystem.hpp"
 #include "core/PathUtil.hpp"
+#ifdef UNNAMED_WITH_FATX
+#include "core/FatxFileSystem.hpp"
+#endif
 
+#include <algorithm>
 #include <system_error>
 
 namespace unnamed::core {
@@ -21,7 +25,34 @@ FileSystemRegistry FileSystemRegistry::withBuiltins() {
     registry.add("Demo", [](const std::filesystem::path&, std::string&) -> std::unique_ptr<FileSystem> {
         return std::make_unique<DemoFileSystem>();
     });
-    // Future backends (FATX, STFS, NAND, ...) register here.
+#ifdef UNNAMED_WITH_FATX
+    // A FATX image, opened read-only: the data partition of an Xbox 360 disk
+    // image, otherwise the first partition found. (The GUI offers every
+    // partition of a disk as its own place, see FileBrowser::openFatxImage.)
+    registry.add("FATX", [](const std::filesystem::path& path, std::string& error) -> std::unique_ptr<FileSystem> {
+        auto device = openImageFile(path, false);
+        if (!device) {
+            error = device.status().message;
+            return nullptr;
+        }
+        const auto partitions = probeFatx(device.value());
+        if (partitions.empty()) {
+            error = "No FATX filesystem found in " + pathToUtf8(path);
+            return nullptr;
+        }
+        auto chosen = std::find_if(partitions.begin(), partitions.end(),
+                                   [](const FatxPartition& p) { return p.partition == "x2"; });
+        if (chosen == partitions.end())
+            chosen = partitions.begin();
+        auto fs = openFatx(device.value(), *chosen, false, pathToUtf8(path.filename()));
+        if (!fs) {
+            error = fs.status().message;
+            return nullptr;
+        }
+        return std::move(fs.value());
+    });
+#endif
+    // Future backends (STFS, NAND, ...) register here.
     return registry;
 }
 

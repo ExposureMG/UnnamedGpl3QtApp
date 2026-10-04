@@ -22,6 +22,8 @@ add_library(unnamed_core STATIC
     include/core/DemoFileSystem.hpp
     include/core/LocalFileSystem.hpp
     include/core/FileSystemRegistry.hpp
+    include/core/BlockDevice.hpp
+    src/core/BlockDevice.cpp
     src/core/Stream.cpp
     src/core/Transfer.cpp
     src/core/FileSystem.cpp
@@ -31,6 +33,33 @@ add_library(unnamed_core STATIC
 )
 target_include_directories(unnamed_core PUBLIC include)
 target_compile_features(unnamed_core PUBLIC cxx_std_20)
+
+# --- optional backends --------------------------------------------------------
+if(UNNAMED_WITH_FATX)
+    # fatx_core from the FATX fork: no FUSE, only the Boost headers. The fatx
+    # command-line tools (mkfs.fatx, fsck.fatx) are built for the tests when
+    # Boost.Program_options is installed.
+    if(POLICY CMP0167)
+        cmake_policy(SET CMP0167 NEW)
+    endif()
+    set(FATX_WITH_FUSE OFF)
+    set(FATX_BUILD_TOOLS OFF)
+    if(UNNAMED_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
+        find_package(Boost QUIET COMPONENTS program_options)
+        if(TARGET Boost::program_options)
+            set(FATX_BUILD_TOOLS ON)
+        else()
+            message(STATUS "Boost.Program_options not found: FATX tests that need mkfs.fatx/fsck.fatx are skipped")
+        endif()
+    endif()
+    add_subdirectory(extern/FATX EXCLUDE_FROM_ALL)
+    target_sources(unnamed_core PRIVATE
+        include/core/FatxFileSystem.hpp
+        src/core/FatxFileSystem.cpp
+    )
+    target_link_libraries(unnamed_core PRIVATE fatx_core)
+    target_compile_definitions(unnamed_core PUBLIC UNNAMED_WITH_FATX=1)
+endif()
 
 # --- application: Qt Quick + Kirigami UI -------------------------------------
 if(UNNAMED_BUILD_APP)

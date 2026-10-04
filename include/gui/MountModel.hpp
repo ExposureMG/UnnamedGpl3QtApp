@@ -15,6 +15,8 @@ struct Mount {
     QString name;
     QString kind;     // registry kind: "Local", "Demo", later "FATX", ...
     QString hostPath; // folder/image on the host; empty for kinds without one
+    QString detail;   // which part of hostPath, e.g. a FATX partition ("hd/x2"); usually empty
+    QString subtitle; // shown under the name; hostPath when empty
     QString currentPath = QStringLiteral("/");
     std::shared_ptr<MountRuntime> runtime;
 };
@@ -24,14 +26,14 @@ class MountModel : public QAbstractListModel {
     QML_ELEMENT
     QML_UNCREATABLE("Owned by FileBrowser")
 public:
-    enum Role { NameRole = Qt::UserRole + 1, KindRole, SubtitleRole, IsCurrentRole };
+    enum Role { NameRole = Qt::UserRole + 1, KindRole, SubtitleRole, IsCurrentRole, CanCheckRole, WritableRole };
 
     explicit MountModel(QObject* parent = nullptr);
 
     int count() const { return static_cast<int>(m_mounts.size()); }
     Mount& at(int i) { return m_mounts.at(static_cast<size_t>(i)); }
     const Mount& at(int i) const { return m_mounts.at(static_cast<size_t>(i)); }
-    int indexOf(const QString& kind, const QString& hostPath) const;
+    int indexOf(const QString& kind, const QString& hostPath, const QString& detail = {}) const;
 
     int current() const { return m_current; }
     void setCurrent(int index);
