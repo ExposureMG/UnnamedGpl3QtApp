@@ -1,5 +1,8 @@
 #include "core/FormatHandlerRegistry.hpp"
 #include "core/GenericFileHandler.hpp"
+#ifdef UNNAMED_WITH_XEX
+#include "core/XexHandler.hpp"
+#endif
 
 #include <algorithm>
 
@@ -9,6 +12,9 @@ FormatHandlerRegistry FormatHandlerRegistry::withBuiltins() {
     FormatHandlerRegistry registry;
     registry.add(std::make_shared<GenericFileHandler>());
     // Format handlers (XEX, STFS, ...) register here behind their build feature.
+#ifdef UNNAMED_WITH_XEX
+    registry.add(std::make_shared<XexHandler>());
+#endif
     return registry;
 }
 

@@ -89,6 +89,20 @@ if(UNNAMED_WITH_FATX)
     target_compile_definitions(unnamed_core PUBLIC UNNAMED_WITH_FATX=1)
 endif()
 
+if(UNNAMED_WITH_XEX)
+    # xextool_core from the XexTool fork (C++17), without its command line
+    # tool and tests. The app includes only its embedding API, XexApi.h.
+    set(XEXTOOL_BUILD_CLI OFF)
+    set(XEXTOOL_BUILD_TESTS OFF)
+    add_subdirectory(extern/XexTool EXCLUDE_FROM_ALL)
+    target_sources(unnamed_core PRIVATE
+        include/core/XexHandler.hpp
+        src/core/XexHandler.cpp
+    )
+    target_link_libraries(unnamed_core PRIVATE xextool_core)
+    target_compile_definitions(unnamed_core PUBLIC UNNAMED_WITH_XEX=1)
+endif()
+
 # --- application: Qt Quick + Kirigami UI -------------------------------------
 if(UNNAMED_BUILD_APP)
     set(CMAKE_AUTOMOC ON)
