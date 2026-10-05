@@ -35,6 +35,12 @@ FATX (`-DUNNAMED_WITH_FATX=ON`) needs CMake >= 3.25 and the Boost headers
 the FATX tests use its `mkfs.fatx`/`fsck.fatx` modes to make and check images;
 without it those tests are skipped.
 
+# Documentation
+
+- [docs/DESIGN_GOALS.md](docs/DESIGN_GOALS.md): purpose, goals and non-goals, platform targets, architecture and safety principles, licensing, UI language.
+- [docs/ROADMAP.md](docs/ROADMAP.md): requirements, decisions, milestones and per-milestone status.
+- [docs/HANDOFF.md](docs/HANDOFF.md): current status, verification, known issues, next steps and notes for whoever continues.
+
 # Project layout
 
 ```
