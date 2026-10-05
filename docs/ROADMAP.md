@@ -190,6 +190,32 @@ unlocked; format needs type-to-confirm.
 - The app builds `fatx_core` in C++20 (the fork's own build uses C++26 and
   GCC 14's warnings); FATX needs CMake >= 3.25 and the Boost headers.
 
+### M2 status (XEX)
+
+- [x] Format-handler layer (core, no Qt): a `FormatHandler` recognises a file
+  from a probe (name, size, first 4 KiB), may add property groups to its
+  expanded view and offers operations described as data
+  (`OperationDescriptor.hpp`: choice, boolean, integer with bounds, text,
+  input file, output file, output folder; defaults, help, picker filters,
+  suggested output names, conditions on an earlier parameter). Values are
+  type-checked and validated in the core; `runOperation()` reads the source
+  as a stream from any `FileSystem` and writes outputs through
+  `OperationIo` (host paths today; files in an output folder must have
+  plain names and are never overwritten). Operations that rewrite the
+  source need `Capability::Replace`. Handlers register in
+  `FormatHandlerRegistry::withBuiltins()` behind their build feature
+- [x] Built-in *Any file* handler: Checksum (CRC-32, SHA-1, optionally saved
+  in BSD format) and Hex Dump (`hexdump -C` layout), so the whole path is
+  used and tested without XexTool
+- [x] GUI: *File Tools…* (context menu, details page) appears when a handler
+  has tools for the selected file; one dialog renders any operation,
+  validates through the core and runs it as a cancellable job in
+  Transfers. Checked headless with screenshots (checksum, hex dump,
+  conditional fields, narrow window). **Not verified**: the native file
+  pickers, which a headless run cannot drive
+- [ ] XEX handler on the XexTool library (info, extract, decrypt/encrypt,
+  compress/decompress, patch, sign), output byte for byte as the CLI
+
 ## Risks
 
 - **Raw-device safety.** FATX writes and format can destroy a console drive:
