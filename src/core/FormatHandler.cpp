@@ -50,6 +50,25 @@ Result<FileProbe> probeFile(const FileSystem& fs, const std::string& path) {
 
 // --- host I/O ------------------------------------------------------------------
 
+namespace {
+
+// Names come from the file being processed, which may be hostile.
+Status checkPlainName(const std::string& name) {
+    if (name == "." || name == ".." || name.find_first_of("/\\:") != std::string::npos ||
+        name.find('\0') != std::string::npos)
+        return Status::failure("“" + name + "” is not a valid file name");
+    return Status::success();
+}
+
+Result<std::unique_ptr<ByteSink>> replaceThrough(FileSystem* fs, const std::string& path,
+                                                 std::optional<std::uint64_t> size) {
+    if (!fs || !hasCapability(fs->capabilities(), Capability::Replace))
+        return Status::failure("The file cannot be changed here");
+    return fs->openWrite(path, size, true);
+}
+
+} // namespace
+
 Result<std::unique_ptr<ByteSource>> HostOperationIo::openInput(const std::string& location) {
     if (location.empty())
         return Status::failure("No input file chosen");
@@ -62,17 +81,37 @@ Result<std::unique_ptr<ByteSink>> HostOperationIo::createOutput(const std::strin
         return Status::failure("No output chosen");
     if (name.empty())
         return openFileSink(pathFromUtf8(location), true);
-    // Names come from the file being processed, which may be hostile.
-    if (name == "." || name == ".." || name.find_first_of("/\\:") != std::string::npos ||
-        name.find('\0') != std::string::npos)
-        return Status::failure("“" + name + "” is not a valid file name");
+    if (const Status st = checkPlainName(name); !st)
+        return st;
     return openFileSink(pathFromUtf8(location) / pathFromUtf8(name), false);
 }
 
 Result<std::unique_ptr<ByteSink>> HostOperationIo::replaceSource(std::optional<std::uint64_t> size) {
-    if (!m_sourceFs || !hasCapability(m_sourceFs->capabilities(), Capability::Replace))
-        return Status::failure("The file cannot be changed here");
-    return m_sourceFs->openWrite(m_sourcePath, size, true);
+    return replaceThrough(m_sourceFs, m_sourcePath, size);
+}
+
+// --- I/O inside a filesystem -----------------------------------------------------
+
+Result<std::unique_ptr<ByteSource>> FileSystemOperationIo::openInput(const std::string& location) {
+    if (location.empty())
+        return Status::failure("No input file chosen");
+    return m_target.openRead(location);
+}
+
+Result<std::unique_ptr<ByteSink>> FileSystemOperationIo::createOutput(const std::string& location,
+                                                                      const std::string& name,
+                                                                      std::optional<std::uint64_t> size) {
+    if (location.empty())
+        return Status::failure("No output chosen");
+    if (name.empty())
+        return m_target.openWrite(location, size, true);
+    if (const Status st = checkPlainName(name); !st)
+        return st;
+    return m_target.openWrite(joinPath(location, name), size, false);
+}
+
+Result<std::unique_ptr<ByteSink>> FileSystemOperationIo::replaceSource(std::optional<std::uint64_t> size) {
+    return replaceThrough(m_sourceFs, m_sourcePath, size);
 }
 
 // --- running -------------------------------------------------------------------
@@ -170,7 +209,7 @@ Result<std::string> runOperation(const FormatHandler& handler, const std::string
         return Status::failure(handler.name() + ": “" + operationId + "” does not apply to " + probe->name);
     if (const Status st = validateParameters(*op, parameters); !st)
         return st;
-    if (op->modifiesSource && !hasCapability(fs.capabilities(), Capability::Replace))
+    if (rewritesSource(*op, parameters) && !hasCapability(fs.capabilities(), Capability::Replace))
         return Status::failure(op->name + " changes the file, which " + fs.name() + " does not allow");
 
     auto source = fs.openRead(path);

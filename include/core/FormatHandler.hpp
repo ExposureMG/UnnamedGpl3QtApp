@@ -77,6 +77,26 @@ private:
     std::string m_sourcePath;
 };
 
+// Paths inside a FileSystem for inputs and outputs (a FATX place, another
+// host folder, ...), with the same rules as HostOperationIo: an OutputFile
+// replaces an existing file, a file in an OutputFolder does not and must have
+// a plain name. Both filesystems must outlive the object.
+class FileSystemOperationIo final : public OperationIo {
+public:
+    FileSystemOperationIo(FileSystem& target, FileSystem* sourceFs, std::string sourcePath)
+        : m_target(target), m_sourceFs(sourceFs), m_sourcePath(std::move(sourcePath)) {}
+
+    Result<std::unique_ptr<ByteSource>> openInput(const std::string& location) override;
+    Result<std::unique_ptr<ByteSink>> createOutput(const std::string& location, const std::string& name,
+                                                   std::optional<std::uint64_t> size) override;
+    Result<std::unique_ptr<ByteSink>> replaceSource(std::optional<std::uint64_t> size) override;
+
+private:
+    FileSystem& m_target;
+    FileSystem* m_sourceFs;
+    std::string m_sourcePath;
+};
+
 // Everything a running operation gets. Parameters are validated and complete
 // (defaults filled in), so the typed getters cannot fail for declared ids.
 class OperationContext {

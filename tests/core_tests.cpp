@@ -73,16 +73,30 @@ public:
         upper.name = "Uppercase";
         upper.modifiesSource = true;
         upper.appliesTo = [](const FileProbe& f) { return f.startsWith("TST1"); };
-        return {concat, upper};
+
+        // Uppercase to a new file, or in place on request.
+        OperationDescriptor shout;
+        shout.id = "shout";
+        shout.name = "Uppercase to";
+        auto to = parameter("to", ParameterKind::Choice, std::string{"copy"});
+        to.options = {{"copy", "New file"}, {"inplace", "In place"}};
+        auto output = parameter("output", ParameterKind::OutputFile, std::string{});
+        output.required = true;
+        output.visibleWhen = {"to", {std::string{"copy"}}};
+        shout.parameters = {to, output};
+        shout.modifiesSource = true;
+        shout.modifiesSourceWhen = {"to", {std::string{"inplace"}}};
+        return {concat, upper, shout};
     }
     Result<std::string> run(const std::string& operationId, OperationContext& ctx) const override {
         auto data = readAll(ctx.source(), 1 << 20, &ctx);
         if (!data)
             return data.status();
-        if (operationId == "upper") {
+        if (operationId == "upper" || operationId == "shout") {
             for (auto& c : data.value())
                 c = static_cast<std::uint8_t>(std::toupper(c));
-            auto sink = ctx.io().replaceSource(data->size());
+            auto sink = ctx.active("output") ? ctx.createOutputFile("output", data->size())
+                                             : ctx.io().replaceSource(data->size());
             if (!sink)
                 return sink.status();
             if (const Status st = sink.value()->write(data->data(), data->size()); !st)
@@ -205,6 +219,29 @@ void testDescriptors() {
     CHECK(writesOutputs(op));
     CHECK(!isParameterActive(op, values, "nope"));
 
+    // Rewriting the source, always or on request.
+    CHECK(!rewritesSource(op, {{"mode", std::string{"b"}}}));
+    OperationDescriptor edit = op;
+    edit.modifiesSource = true;
+    CHECK(rewritesSource(edit, {}));
+    edit.modifiesSourceWhen = {"mode", {std::string{"b"}}};
+    CHECK(validateDescriptor(edit));
+    CHECK(!rewritesSource(edit, {}));
+    CHECK(rewritesSource(edit, {{"mode", std::string{"b"}}}));
+    edit.modifiesSourceWhen = {"count", {std::int64_t{3}}};
+    CHECK(validateDescriptor(edit));
+    CHECK(!rewritesSource(edit, {{"count", std::int64_t{3}}})); // count is hidden
+    CHECK(rewritesSource(edit, {{"mode", std::string{"b"}}, {"count", std::int64_t{3}}}));
+    auto brokenEdit = [&](auto change) {
+        OperationDescriptor copy = edit;
+        change(copy);
+        return !validateDescriptor(copy);
+    };
+    CHECK(brokenEdit([](OperationDescriptor& o) { o.modifiesSource = false; }));
+    CHECK(brokenEdit([](OperationDescriptor& o) { o.modifiesSourceWhen.parameter = "nope"; }));
+    CHECK(brokenEdit([](OperationDescriptor& o) { o.modifiesSourceWhen.values.clear(); }));
+    CHECK(brokenEdit([](OperationDescriptor& o) { o.modifiesSourceWhen.values = {std::string{"3"}}; }));
+
     CHECK(expandSuggestedName("{stem}.bin", "default.xex") == "default.bin");
     CHECK(expandSuggestedName("{name}.txt", "default.xex") == "default.xex.txt");
     CHECK(expandSuggestedName("{stem}-x", ".hidden") == ".hidden-x");
@@ -261,11 +298,12 @@ void testFormatHandlers(const fs::path& root) {
     CHECK(!probeFile(local, "/folder"));
 
     auto registry = FormatHandlerRegistry::withBuiltins();
+    const std::size_t builtins = registry.handlers().size(); // more with optional formats built in
     CHECK(registry.find("file") != nullptr);
     CHECK(registry.find("test") == nullptr);
     registry.add(std::make_shared<TestHandler>());
     registry.add(std::make_shared<TestHandler>()); // same id replaces
-    CHECK(registry.handlers().size() == 2);
+    CHECK(registry.handlers().size() == builtins + 1);
     auto matches = registry.match(probe.value());
     CHECK(matches.size() == 2 && matches[0].handler->id() == "test" && matches[0].score == kMatchContent);
     CHECK(matches[1].handler->id() == "file" && matches[1].score == kMatchAnyFile);
@@ -273,8 +311,8 @@ void testFormatHandlers(const fs::path& root) {
     CHECK(matches.size() == 1 && matches[0].handler->id() == "file");
 
     const auto test = registry.find("test");
-    CHECK(applicableOperations(*test, probe.value()).size() == 2);
-    CHECK(applicableOperations(*test, probeFile(local, "/plain.tst").value()).size() == 1); // no "upper"
+    CHECK(applicableOperations(*test, probe.value()).size() == 3);
+    CHECK(applicableOperations(*test, probeFile(local, "/plain.tst").value()).size() == 2); // no "upper"
     CHECK(applicableOperations(*test, probeFile(local, "/data.bin").value()).empty());
     std::vector<PropertyGroup> groups;
     {
@@ -373,6 +411,42 @@ void testFormatHandlers(const fs::path& root) {
     HostOperationIo noSource(nullptr, {});
     CHECK(!noSource.replaceSource(1));
     CHECK(runOperation(*generic, "checksum", view, "/item.tst", {}, viewIo)); // reading is enough
+
+    // Rewriting on request: a new file works on a read-only place, in place does not.
+    std::ofstream(dir / "src" / "ask.tst", std::ios::binary) << "TST1 ask";
+    CHECK(runOperation(*test, "shout", view, "/ask.tst", {{"output", out + "/ask.out"}}, viewIo));
+    CHECK(readFile(dir / "out" / "ask.out") == "TST1 ASK" && readFile(dir / "src" / "ask.tst") == "TST1 ask");
+    CHECK(!runOperation(*test, "shout", view, "/ask.tst", {{"to", std::string{"inplace"}}}, viewIo));
+    CHECK(!runOperation(*test, "shout", local, "/ask.tst", {{"to", std::string{"copy"}}}, itemIo)); // no output
+    HostOperationIo askIo(&local, "/ask.tst");
+    CHECK(runOperation(*test, "shout", local, "/ask.tst", {{"to", std::string{"inplace"}}}, askIo));
+    CHECK(readFile(dir / "src" / "ask.tst") == "TST1 ASK");
+
+    // Inputs and outputs inside another filesystem.
+    fs::create_directories(dir / "other" / "sub");
+    std::ofstream(dir / "other" / "more.bin", std::ios::binary) << "+more";
+    LocalFileSystem other(dir / "other");
+    FileSystemOperationIo otherIo(other, &local, "/item.tst");
+    const Parameters inOther = {{"input", std::string{"/more.bin"}}, {"folder", std::string{"/sub"}}};
+    CHECK(runOperation(*test, "concat", local, "/item.tst", inOther, otherIo));
+    CHECK(readFile(dir / "other" / "sub" / "joined.bin") == "TST1 BODY+more");
+    CHECK(!runOperation(*test, "concat", local, "/item.tst", inOther, otherIo)); // exists
+    Parameters escaping = inOther;
+    escaping["prefix"] = std::string{"../up"};
+    CHECK(!runOperation(*test, "concat", local, "/item.tst", escaping, otherIo));
+    CHECK(!fs::exists(dir / "other" / "up.bin"));
+    Parameters missing = inOther;
+    missing["input"] = std::string{"/nope"};
+    CHECK(!runOperation(*test, "concat", local, "/item.tst", missing, otherIo));
+    const Parameters shoutOut = {{"output", std::string{"/shout.txt"}}};
+    CHECK(runOperation(*test, "shout", local, "/plain.tst", shoutOut, otherIo));
+    CHECK(runOperation(*test, "shout", local, "/plain.tst", shoutOut, otherIo)); // an output file is replaced
+    CHECK(readFile(dir / "other" / "shout.txt") == "NO MAGIC" && readFile(dir / "src" / "plain.tst") == "no magic");
+    CHECK(runOperation(*test, "upper", local, "/item.tst", {}, otherIo)); // the source, not the target
+    CHECK(!fs::exists(dir / "other" / "item.tst"));
+    FileSystemOperationIo noReplace(other, &view, "/item.tst");
+    CHECK(!noReplace.replaceSource(1));
+    CHECK(!otherIo.openInput({}) && !otherIo.createOutput({}, {}, std::nullopt));
 }
 
 } // namespace

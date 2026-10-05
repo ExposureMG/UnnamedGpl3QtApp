@@ -74,6 +74,9 @@ struct OperationDescriptor {
     // Rewrites the source file in place (needs a writable filesystem with
     // Capability::Replace). The UI asks before running it.
     bool modifiesSource = false;
+    // With modifiesSource: the source is rewritten only while this holds (a
+    // "write to a new file or in place" choice, say); empty means always.
+    Condition modifiesSourceWhen;
     // Which files the operation applies to, beyond its handler recognising
     // them; empty means every file the handler recognises.
     std::function<bool(const FileProbe&)> appliesTo;
@@ -81,7 +84,8 @@ struct OperationDescriptor {
 
 // Checks the descriptor itself: unique non-empty ids, defaults of the right
 // type (an option for Choice, within bounds for Integer), options present for
-// Choice, conditions naming an earlier parameter with values of its type.
+// Choice, conditions naming an earlier parameter with values of its type
+// (modifiesSourceWhen: any parameter, and only with modifiesSource).
 Status validateDescriptor(const OperationDescriptor& operation);
 
 // Checks `values` against the descriptor and fills in defaults for missing
@@ -92,6 +96,10 @@ Status validateParameters(const OperationDescriptor& operation, Parameters& valu
 // Whether a parameter is in effect for these values (see Condition).
 bool isParameterActive(const OperationDescriptor& operation, const Parameters& values,
                        const std::string& id);
+
+// Whether running the operation with these values rewrites the source
+// (modifiesSource, and modifiesSourceWhen holds).
+bool rewritesSource(const OperationDescriptor& operation, const Parameters& values);
 
 // True if the operation has an OutputFile or OutputFolder parameter.
 bool writesOutputs(const OperationDescriptor& operation);

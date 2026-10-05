@@ -112,6 +112,20 @@ Status validateDescriptor(const OperationDescriptor& operation) {
         }
         seen.insert(p.id);
     }
+    if (const Condition& when = operation.modifiesSourceWhen; !when.parameter.empty()) {
+        const std::string where = operation.id + ": modifiesSourceWhen";
+        if (!operation.modifiesSource)
+            return Status::failure(where + " without modifiesSource");
+        const ParameterDescriptor* other = findParameter(operation, when.parameter);
+        if (!other)
+            return Status::failure(where + " must name a parameter");
+        if (when.values.empty())
+            return Status::failure(where + " without values");
+        for (const ParameterValue& v : when.values) {
+            if (v.index() != valueIndex(other->kind))
+                return Status::failure(where + ": value must be " + typeName(other->kind));
+        }
+    }
     return Status::success();
 }
 
@@ -137,6 +151,20 @@ Status validateParameters(const OperationDescriptor& operation, Parameters& valu
 bool isParameterActive(const OperationDescriptor& operation, const Parameters& values, const std::string& id) {
     const ParameterDescriptor* p = findParameter(operation, id);
     return p && active(operation, values, *p, 0);
+}
+
+bool rewritesSource(const OperationDescriptor& operation, const Parameters& values) {
+    if (!operation.modifiesSource)
+        return false;
+    const Condition& when = operation.modifiesSourceWhen;
+    if (when.parameter.empty())
+        return true;
+    if (!isParameterActive(operation, values, when.parameter))
+        return false;
+    const auto it = values.find(when.parameter);
+    const ParameterValue& current =
+        it != values.end() ? it->second : findParameter(operation, when.parameter)->defaultValue;
+    return std::find(when.values.begin(), when.values.end(), current) != when.values.end();
 }
 
 bool writesOutputs(const OperationDescriptor& operation) {
