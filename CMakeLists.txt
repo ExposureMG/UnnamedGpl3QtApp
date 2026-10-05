@@ -24,6 +24,10 @@ add_library(unnamed_core STATIC
     include/core/FileSystemRegistry.hpp
     include/core/BlockDevice.hpp
     include/core/Drives.hpp
+    include/core/OperationDescriptor.hpp
+    include/core/FormatHandler.hpp
+    include/core/FormatHandlerRegistry.hpp
+    include/core/GenericFileHandler.hpp
     src/core/BlockDevice.cpp
     src/core/Drives.cpp
     src/core/Stream.cpp
@@ -32,6 +36,10 @@ add_library(unnamed_core STATIC
     src/core/DemoFileSystem.cpp
     src/core/LocalFileSystem.cpp
     src/core/FileSystemRegistry.cpp
+    src/core/OperationDescriptor.cpp
+    src/core/FormatHandler.cpp
+    src/core/FormatHandlerRegistry.cpp
+    src/core/GenericFileHandler.cpp
 )
 target_include_directories(unnamed_core PUBLIC include)
 target_compile_features(unnamed_core PUBLIC cxx_std_20)
