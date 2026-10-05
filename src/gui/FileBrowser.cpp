@@ -14,6 +14,8 @@
 #include <QFileInfo>
 #include <QRunnable>
 
+#include <cmath>
+
 namespace unnamed::gui {
 
 namespace {
@@ -44,11 +46,114 @@ QVariantMap toVariant(const core::Details& d) {
 
 QString tr(const char* text) { return QCoreApplication::translate("FileBrowser", text); }
 
+const char* kindName(core::ParameterKind kind) {
+    switch (kind) {
+    case core::ParameterKind::Choice: return "choice";
+    case core::ParameterKind::Boolean: return "boolean";
+    case core::ParameterKind::Integer: return "integer";
+    case core::ParameterKind::Text: return "text";
+    case core::ParameterKind::InputFile: return "inputFile";
+    case core::ParameterKind::OutputFile: return "outputFile";
+    case core::ParameterKind::OutputFolder: return "outputFolder";
+    }
+    return "text";
+}
+
+QVariant toVariant(const core::ParameterValue& value) {
+    if (const bool* b = std::get_if<bool>(&value))
+        return *b;
+    if (const std::int64_t* i = std::get_if<std::int64_t>(&value))
+        return QVariant::fromValue<qlonglong>(*i);
+    return QString::fromStdString(std::get<std::string>(value));
+}
+
+QVariantMap toVariant(const core::FormatHandler& handler, const core::OperationDescriptor& op,
+                      const std::string& sourceName, bool canReplace) {
+    QVariantList parameters;
+    for (const core::ParameterDescriptor& p : op.parameters) {
+        QVariantList options;
+        for (const core::ChoiceOption& o : p.options)
+            options.append(QVariantMap{{QStringLiteral("id"), QString::fromStdString(o.id)},
+                                       {QStringLiteral("label"), QString::fromStdString(o.label)}});
+        QStringList filters;
+        for (const std::string& f : p.nameFilters)
+            filters.append(QString::fromStdString(f));
+        parameters.append(QVariantMap{
+            {QStringLiteral("id"), QString::fromStdString(p.id)},
+            {QStringLiteral("kind"), QString::fromLatin1(kindName(p.kind))},
+            {QStringLiteral("label"), QString::fromStdString(p.label)},
+            {QStringLiteral("help"), QString::fromStdString(p.help)},
+            {QStringLiteral("defaultValue"), toVariant(p.defaultValue)},
+            {QStringLiteral("options"), options},
+            {QStringLiteral("minimum"), QVariant::fromValue<qlonglong>(p.minimum)},
+            {QStringLiteral("maximum"), QVariant::fromValue<qlonglong>(p.maximum)},
+            {QStringLiteral("required"), p.required},
+            {QStringLiteral("nameFilters"), filters},
+            {QStringLiteral("suggestedName"),
+             QString::fromStdString(core::expandSuggestedName(p.suggestedName, sourceName))},
+        });
+    }
+    const bool available = !op.modifiesSource || canReplace;
+    return {
+        {QStringLiteral("handler"), QString::fromStdString(handler.id())},
+        {QStringLiteral("handlerName"), QString::fromStdString(handler.name())},
+        {QStringLiteral("id"), QString::fromStdString(op.id)},
+        {QStringLiteral("name"), QString::fromStdString(op.name)},
+        {QStringLiteral("description"), QString::fromStdString(op.description)},
+        {QStringLiteral("modifiesSource"), op.modifiesSource},
+        {QStringLiteral("available"), available},
+        {QStringLiteral("unavailableReason"),
+         available ? QString() : tr("This place is read-only, and this tool changes the file.")},
+        {QStringLiteral("parameters"), parameters},
+    };
+}
+
+// Dialog values to typed parameters. A value that does not fit its kind is
+// passed on as text, so validation names the problem.
+core::Parameters toParameters(const core::OperationDescriptor& op, const QVariantMap& values) {
+    core::Parameters out;
+    for (auto it = values.begin(); it != values.end(); ++it) {
+        const std::string id = it.key().toStdString();
+        const QVariant& v = it.value();
+        const core::ParameterDescriptor* p = core::findParameter(op, id);
+        const core::ParameterKind kind = p ? p->kind : core::ParameterKind::Text;
+        if (kind == core::ParameterKind::Boolean && v.typeId() == QMetaType::Bool) {
+            out[id] = v.toBool();
+        } else if (kind == core::ParameterKind::Integer) {
+            bool ok = false;
+            qlonglong n = 0;
+            if (v.typeId() == QMetaType::Double) {
+                const double d = v.toDouble();
+                ok = std::isfinite(d) && d == std::floor(d) && std::fabs(d) < 9.0e18;
+                n = ok ? static_cast<qlonglong>(d) : 0;
+            } else if (v.typeId() == QMetaType::QString) {
+                n = v.toString().trimmed().toLongLong(&ok);
+            } else {
+                n = v.toLongLong(&ok);
+            }
+            if (ok)
+                out[id] = std::int64_t{n};
+            else
+                out[id] = v.toString().toStdString();
+        } else if (kind == core::ParameterKind::InputFile || kind == core::ParameterKind::OutputFile ||
+                   kind == core::ParameterKind::OutputFolder) {
+            QString path = v.toString().trimmed();
+            if (path.startsWith(QStringLiteral("file:")))
+                path = QUrl(path).toLocalFile();
+            out[id] = path.toStdString();
+        } else {
+            out[id] = v.toString().toStdString();
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 FileBrowser::FileBrowser(QObject* parent)
     : QObject(parent),
       m_registry(core::FileSystemRegistry::withBuiltins()),
+      m_handlers(core::FormatHandlerRegistry::withBuiltins()),
       m_model(new FileSystemModel(this)),
       m_mounts(new MountModel(this)),
       m_jobs(new JobModel(this)) {
@@ -630,7 +735,12 @@ void FileBrowser::activate(int row) {
 void FileBrowser::refreshDetails() {
     const auto rt = runtime();
     const quint64 generation = ++m_detailsGeneration;
-    if (!rt || !core::hasCapability(rt->capabilities, core::Capability::Inspect)) {
+    setFileOperations({});
+    const bool inspect = rt && core::hasCapability(rt->capabilities, core::Capability::Inspect);
+    // File tools and format details read the selected file.
+    const bool tools = rt && hasSelection() && !selectedIsDirectory() &&
+                       core::hasCapability(rt->capabilities, core::Capability::Extract);
+    if (!inspect && !tools) {
         m_itemDetails.clear();
         m_fileSystemDetails.clear();
         emit detailsChanged();
@@ -638,21 +748,47 @@ void FileBrowser::refreshDetails() {
     }
 
     const std::string target = hasSelection() ? selectedPath().toStdString() : m_model->path().toStdString();
-    rt->pool.start(QRunnable::create([this, rt, target, generation] {
+    const bool canReplace = core::hasCapability(rt->capabilities, core::Capability::Replace);
+    const core::FormatHandlerRegistry handlers = m_handlers; // shared, stateless handlers
+    rt->pool.start(QRunnable::create([this, rt, target, generation, inspect, tools, canReplace, handlers] {
         core::Details item, filesystem;
-        const bool haveItem = bool(rt->fs->describe(target, item));
-        const bool haveFs = bool(rt->fs->describeFileSystem(filesystem));
+        const bool haveItem = inspect && bool(rt->fs->describe(target, item));
+        const bool haveFs = inspect && bool(rt->fs->describeFileSystem(filesystem));
+        QVariantList operations;
+        if (tools) {
+            if (auto probe = core::probeFile(*rt->fs, target)) {
+                for (const auto& match : handlers.match(probe.value())) {
+                    for (const core::OperationDescriptor& op : core::applicableOperations(*match.handler, probe.value()))
+                        operations.append(toVariant(*match.handler, op, probe->name, canReplace));
+                    if (!haveItem)
+                        continue;
+                    auto in = rt->fs->openRead(target);
+                    std::vector<core::PropertyGroup> groups;
+                    if (in && match.handler->describe(*in.value(), probe.value(), groups))
+                        item.groups.insert(item.groups.end(), groups.begin(), groups.end());
+                }
+            }
+        }
         QMetaObject::invokeMethod(
             this,
-            [this, generation, haveItem, haveFs, item = std::move(item), filesystem = std::move(filesystem)] {
+            [this, generation, haveItem, haveFs, item = std::move(item), filesystem = std::move(filesystem),
+             operations = std::move(operations)] {
                 if (generation != m_detailsGeneration)
                     return;
                 m_itemDetails = haveItem ? toVariant(item) : QVariantMap();
                 m_fileSystemDetails = haveFs ? toVariant(filesystem) : QVariantMap();
                 emit detailsChanged();
+                setFileOperations(operations);
             },
             Qt::QueuedConnection);
     }));
+}
+
+void FileBrowser::setFileOperations(const QVariantList& operations) {
+    if (m_fileOperations == operations)
+        return;
+    m_fileOperations = operations;
+    emit fileOperationsChanged();
 }
 
 // --- operations (each one is a cancellable background job) -------------------
@@ -760,6 +896,98 @@ void FileBrowser::renameSelected(const QString& newName) {
            [path, target](core::FileSystem& fs, const JobContext&) { return fs.rename(path, target.toStdString()); },
            [this, oldName, target](const core::Status& st) {
                finishOperation(st, tr("Renamed %1 to %2").arg(oldName, target), st ? target : oldName);
+           });
+}
+
+// --- file tools ---------------------------------------------------------------
+
+std::optional<core::OperationDescriptor> FileBrowser::findOperation(const QString& handler,
+                                                                    const QString& operation) const {
+    const auto h = m_handlers.find(handler.toStdString());
+    if (!h)
+        return std::nullopt;
+    for (core::OperationDescriptor& op : h->operations()) {
+        if (op.id == operation.toStdString())
+            return std::move(op);
+    }
+    return std::nullopt;
+}
+
+QString FileBrowser::validateOperation(const QString& handler, const QString& operation,
+                                       const QVariantMap& values) const {
+    const auto op = findOperation(handler, operation);
+    if (!op)
+        return tr("Unknown file tool: %1").arg(operation);
+    core::Parameters parameters = toParameters(*op, values);
+    const core::Status st = core::validateParameters(*op, parameters);
+    return st ? QString() : QString::fromStdString(st.message);
+}
+
+QStringList FileBrowser::activeParameters(const QString& handler, const QString& operation,
+                                          const QVariantMap& values) const {
+    QStringList active;
+    const auto op = findOperation(handler, operation);
+    if (!op)
+        return active;
+    const core::Parameters parameters = toParameters(*op, values);
+    for (const core::ParameterDescriptor& p : op->parameters) {
+        if (core::isParameterActive(*op, parameters, p.id))
+            active.append(QString::fromStdString(p.id));
+    }
+    return active;
+}
+
+void FileBrowser::runFileOperation(const QString& fileName, const QString& handlerId, const QString& operationId,
+                                   const QVariantMap& values) {
+    const auto rt = runtime();
+    const int row = m_model->rowForName(fileName);
+    if (!rt || row < 0 || m_model->entryAt(row).type != core::EntryType::File || !has(core::Capability::Extract))
+        return;
+    const auto handler = m_handlers.find(handlerId.toStdString());
+    const auto op = findOperation(handlerId, operationId);
+    if (!handler || !op) {
+        setError(tr("Unknown file tool: %1").arg(operationId));
+        return;
+    }
+    core::Parameters parameters = toParameters(*op, values);
+    if (const core::Status st = core::validateParameters(*op, parameters); !st) {
+        setError(QString::fromStdString(st.message));
+        return;
+    }
+    if (op->modifiesSource && !has(core::Capability::Replace)) {
+        setError(tr("%1 changes the file, but this place is read-only").arg(QString::fromStdString(op->name)));
+        return;
+    }
+
+    const std::string path = core::joinPath(m_model->path().toStdString(), fileName.toStdString());
+    const std::string id = operationId.toStdString();
+    const QString title = tr("%1 %2").arg(QString::fromStdString(op->name), fileName);
+    const bool modifiesSource = op->modifiesSource;
+    auto report = std::make_shared<std::string>();
+    runJob(title, rt,
+           [handler, id, path, parameters, report](core::FileSystem& fs, const JobContext& ctx) {
+               core::HostOperationIo io(&fs, path);
+               const core::ProgressFn progress = [&](const core::TransferProgress& p) {
+                   ctx.progress(p.bytesTotal ? double(p.bytesDone) / double(p.bytesTotal) : -1.0,
+                                QString::fromStdString(p.current));
+                   return !ctx.cancelled();
+               };
+               auto result = core::runOperation(*handler, id, fs, path, parameters, io, progress);
+               if (result)
+                   *report = result.value();
+               return result.status();
+           },
+           [this, title, fileName, modifiesSource, report](const core::Status& st) {
+               if (st && !report->empty())
+                   emit reportReady(title, QString::fromStdString(*report));
+               if (modifiesSource)
+                   finishOperation(st, tr("%1: done").arg(title), fileName);
+               else if (st && report->empty())
+                   emit notice(tr("%1: done").arg(title));
+               else if (!st && st.cancelled)
+                   emit notice(tr("Cancelled"));
+               else if (!st)
+                   setError(QString::fromStdString(st.message));
            });
 }
 

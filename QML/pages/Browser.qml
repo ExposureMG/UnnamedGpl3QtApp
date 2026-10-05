@@ -394,6 +394,11 @@ Kirigami.Page {
             action: root.itemActions.replace
         }
         QQC2.MenuItem {
+            action: root.itemActions.fileTools
+            visible: root.itemActions.fileTools.enabled
+            height: visible ? implicitHeight : 0
+        }
+        QQC2.MenuItem {
             action: root.itemActions.remove
         }
     }

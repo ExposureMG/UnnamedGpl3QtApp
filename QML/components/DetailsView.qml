@@ -83,6 +83,10 @@ ColumnLayout {
             visible: !FileBrowser.selectedIsDirectory
         }
         QQC2.Button {
+            action: root.actions ? root.actions.fileTools : null
+            visible: root.actions !== null && root.actions.fileTools.enabled
+        }
+        QQC2.Button {
             action: root.actions ? root.actions.rename : null
         }
         QQC2.Button {

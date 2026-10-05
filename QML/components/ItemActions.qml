@@ -20,6 +20,7 @@ Item {
     property alias inject: injectAction
     property alias newFolder: newFolderAction
     property alias rename: renameAction
+    property alias fileTools: fileToolsAction
 
     signal propertiesRequested
 
@@ -93,6 +94,19 @@ Item {
             nameField.text = FileBrowser.selectedName;
             nameDialog.open();
         }
+    }
+
+    // Offered only when a format handler has tools for the selected file.
+    Kirigami.Action {
+        id: fileToolsAction
+        text: qsTr("File Tools…")
+        icon.name: "applications-utilities"
+        enabled: FileBrowser.hasSelection && FileBrowser.fileOperations.length > 0
+        onTriggered: fileToolDialog.openFor(FileBrowser.selectedName, FileBrowser.fileOperations, 0)
+    }
+
+    FileToolDialog {
+        id: fileToolDialog
     }
 
     FolderDialog {

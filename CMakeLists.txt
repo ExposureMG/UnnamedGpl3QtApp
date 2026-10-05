@@ -107,6 +107,7 @@ if(UNNAMED_BUILD_APP)
             QML/components/DrivesDialog.qml
             QML/components/FileGridView.qml
             QML/components/FileListView.qml
+            QML/components/FileToolDialog.qml
             QML/components/ItemActions.qml
             QML/components/JobsPopup.qml
             QML/components/KindIcon.qml

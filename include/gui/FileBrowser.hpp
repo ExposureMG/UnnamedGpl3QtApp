@@ -1,11 +1,13 @@
 #pragma once
 
 #include "core/FileSystemRegistry.hpp"
+#include "core/FormatHandlerRegistry.hpp"
 #include "gui/FileSystemModel.hpp"
 #include "gui/JobModel.hpp"
 #include "gui/MountModel.hpp"
 
 #include <QObject>
+#include <QStringList>
 #include <QThreadPool>
 #include <QUrl>
 #include <QVariantList>
@@ -15,6 +17,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace unnamed::gui {
 
@@ -61,6 +64,13 @@ class FileBrowser : public QObject {
     Q_PROPERTY(QVariantMap itemDetails READ itemDetails NOTIFY detailsChanged)
     Q_PROPERTY(QVariantMap fileSystemDetails READ fileSystemDetails NOTIFY detailsChanged)
     Q_PROPERTY(bool inspectFileSystem READ inspectFileSystem WRITE setInspectFileSystem NOTIFY inspectFileSystemChanged)
+
+    // File tools (format-handler operations) for the selected file:
+    // [{handler, handlerName, id, name, description, modifiesSource, available,
+    //   unavailableReason, parameters:[{id, kind, label, help, defaultValue,
+    //   options:[{id, label}], minimum, maximum, required, nameFilters, suggestedName}]}]
+    // kind is "choice", "boolean", "integer", "text", "inputFile", "outputFile" or "outputFolder".
+    Q_PROPERTY(QVariantList fileOperations READ fileOperations NOTIFY fileOperationsChanged)
 public:
     explicit FileBrowser(QObject* parent = nullptr);
 
@@ -98,6 +108,7 @@ public:
     QVariantMap fileSystemDetails() const { return m_fileSystemDetails; }
     bool inspectFileSystem() const { return m_inspectFileSystem; }
     void setInspectFileSystem(bool value);
+    QVariantList fileOperations() const { return m_fileOperations; }
 
     // Opening / switching filesystems.
     Q_INVOKABLE void openFolder(const QUrl& folder);
@@ -140,6 +151,22 @@ public:
     // Erases a writable place and creates an empty filesystem labelled `label`.
     Q_INVOKABLE void formatMount(int index, const QString& label);
 
+    // File tools. `values` maps parameter ids to values as the dialog holds
+    // them (numbers, booleans, strings; file URLs or local paths).
+    // Empty if the values are acceptable, otherwise the first problem.
+    Q_INVOKABLE QString validateOperation(const QString& handler, const QString& operation,
+                                          const QVariantMap& values) const;
+    // Ids of the parameters in effect for these values (the others are hidden).
+    Q_INVOKABLE QStringList activeParameters(const QString& handler, const QString& operation,
+                                             const QVariantMap& values) const;
+    // Runs an operation on the file `fileName` of the current folder as a
+    // background job; a report, if any, arrives as reportReady().
+    Q_INVOKABLE void runFileOperation(const QString& fileName, const QString& handler, const QString& operation,
+                                      const QVariantMap& values);
+    // Between the paths shown in text fields and the URLs of file pickers.
+    Q_INVOKABLE QString localPath(const QUrl& url) const { return url.isLocalFile() ? url.toLocalFile() : url.toString(); }
+    Q_INVOKABLE QUrl fileUrl(const QString& path) const { return QUrl::fromLocalFile(path); }
+
 signals:
     void stateChanged();
     void selectionChanged();
@@ -151,6 +178,7 @@ signals:
     void notice(const QString& message); // transient success message
     void reportReady(const QString& title, const QString& text); // e.g. a health check result
     void drivesChanged();
+    void fileOperationsChanged();
 
 private:
     // Handed to background work: cancellation flag and throttled progress.
@@ -179,14 +207,18 @@ private:
     void finishOperation(const core::Status& status, const QString& successMessage,
                          const QString& selectAfter = {});
     void setError(const QString& message);
+    void setFileOperations(const QVariantList& operations);
+    std::optional<core::OperationDescriptor> findOperation(const QString& handler, const QString& operation) const;
 
     core::FileSystemRegistry m_registry;
+    core::FormatHandlerRegistry m_handlers;
     FileSystemModel* m_model;
     MountModel* m_mounts;
     JobModel* m_jobs;
     QString m_selectedName;
     QVariantMap m_itemDetails;
     QVariantMap m_fileSystemDetails;
+    QVariantList m_fileOperations;
     bool m_inspectFileSystem = false;
     bool m_loading = false;
     quint64 m_navGeneration = 0;     // drops listing results that were superseded
