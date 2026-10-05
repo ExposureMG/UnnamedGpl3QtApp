@@ -202,7 +202,12 @@ unlocked; format needs type-to-confirm.
   as a stream from any `FileSystem` and writes outputs through
   `OperationIo` (host paths today; files in an output folder must have
   plain names and are never overwritten). Operations that rewrite the
-  source need `Capability::Replace`. Handlers register in
+  source need `Capability::Replace`; one may do so only on request
+  (`modifiesSourceWhen`, e.g. a *Write to: a new file / in place* choice),
+  and then stays available on read-only places with in place refused.
+  `FileSystemOperationIo` reads inputs and writes outputs inside any
+  `FileSystem` (tested with a second local place; the GUI still offers host
+  paths only). Handlers register in
   `FormatHandlerRegistry::withBuiltins()` behind their build feature
 - [x] Built-in *Any file* handler: Checksum (CRC-32, SHA-1, optionally saved
   in BSD format) and Hex Dump (`hexdump -C` layout), so the whole path is
@@ -213,8 +218,30 @@ unlocked; format needs type-to-confirm.
   Transfers. Checked headless with screenshots (checksum, hex dump,
   conditional fields, narrow window). **Not verified**: the native file
   pickers, which a headless run cannot drive
-- [ ] XEX handler on the XexTool library (info, extract, decrypt/encrypt,
-  compress/decompress, patch, sign), output byte for byte as the CLI
+- [x] XEX handler (`XexHandler`, `-DUNNAMED_WITH_XEX=ON`) on the XexTool
+  fork's `xextool_core` (branch `xex-core`, only `XexApi.h` included).
+  Recognises XEX2 (and XEX1, which XexTool cannot read: no tools) by magic.
+  Expanded view: executable, execution ID, security (machine, encryption,
+  compression, regions, media, keys, sections), ratings, libraries,
+  resources. Tools: Info (the `-l` report or the summary, optionally saved),
+  Extract Basefile (`-b`), IDC Script (`-i`), Resources (`-d`), Decrypt and
+  Encrypt (`-e`), Compress / Decompress (`-c`: Normal, Basic, Uncompressed),
+  Sign (`-m`: Devkit with the devkit key; Retail writes the cleared, all-zero
+  signature, since no retail key exists), Apply Patch (`-p`), Remove Limits
+  (`-r`), Add Bounding Path (`-a`), Fix Updated Executable (`-u`), Export and
+  Import Info XML (`-z g`, `-z s`). Every xex edit writes a new file by
+  default or the source in place on request. Files are read whole into
+  memory (refused above 512 MiB; the expanded view stops at 64 MiB); XexTool
+  calls cannot be interrupted, so cancelling acts between read, process and
+  write. `tests/xex_tests.cpp` runs each tool over the fork's golden samples
+  and compares SHA-256 and report text with the CLI's golden record
+  (`extern/XexTool/tests/golden/expected.txt`); passes in Debug and under
+  ASan/UBSan. Checked headless in the GUI (details, tool dialog, in-place
+  warning). **Not exposed**: special patches (`-s`, a per-title bit mask),
+  the `-x` XML facts, `pack` (its input is an ELF), several edits in one run
+  (run them one after another), extracting a subset of resources.
+  **Not verified**: real console titles, consoles running the output, and
+  writing results to a FATX place from the GUI
 
 ## Risks
 
