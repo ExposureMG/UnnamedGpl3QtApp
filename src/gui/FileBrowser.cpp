@@ -93,7 +93,9 @@ QVariantMap toVariant(const core::FormatHandler& handler, const core::OperationD
              QString::fromStdString(core::expandSuggestedName(p.suggestedName, sourceName))},
         });
     }
-    const bool available = !op.modifiesSource || canReplace;
+    // An operation that rewrites the source only on request stays available,
+    // and validateOperation() refuses that choice on a read-only place.
+    const bool available = !op.modifiesSource || !op.modifiesSourceWhen.parameter.empty() || canReplace;
     return {
         {QStringLiteral("handler"), QString::fromStdString(handler.id())},
         {QStringLiteral("handlerName"), QString::fromStdString(handler.name())},
@@ -920,7 +922,16 @@ QString FileBrowser::validateOperation(const QString& handler, const QString& op
         return tr("Unknown file tool: %1").arg(operation);
     core::Parameters parameters = toParameters(*op, values);
     const core::Status st = core::validateParameters(*op, parameters);
-    return st ? QString() : QString::fromStdString(st.message);
+    if (!st)
+        return QString::fromStdString(st.message);
+    if (core::rewritesSource(*op, parameters) && !has(core::Capability::Replace))
+        return tr("This place is read-only: write to a new file instead.");
+    return QString();
+}
+
+bool FileBrowser::rewritesSource(const QString& handler, const QString& operation, const QVariantMap& values) const {
+    const auto op = findOperation(handler, operation);
+    return op && core::rewritesSource(*op, toParameters(*op, values));
 }
 
 QStringList FileBrowser::activeParameters(const QString& handler, const QString& operation,
@@ -954,7 +965,8 @@ void FileBrowser::runFileOperation(const QString& fileName, const QString& handl
         setError(QString::fromStdString(st.message));
         return;
     }
-    if (op->modifiesSource && !has(core::Capability::Replace)) {
+    const bool modifiesSource = core::rewritesSource(*op, parameters);
+    if (modifiesSource && !has(core::Capability::Replace)) {
         setError(tr("%1 changes the file, but this place is read-only").arg(QString::fromStdString(op->name)));
         return;
     }
@@ -962,7 +974,6 @@ void FileBrowser::runFileOperation(const QString& fileName, const QString& handl
     const std::string path = core::joinPath(m_model->path().toStdString(), fileName.toStdString());
     const std::string id = operationId.toStdString();
     const QString title = tr("%1 %2").arg(QString::fromStdString(op->name), fileName);
-    const bool modifiesSource = op->modifiesSource;
     auto report = std::make_shared<std::string>();
     runJob(title, rt,
            [handler, id, path, parameters, report](core::FileSystem& fs, const JobContext& ctx) {

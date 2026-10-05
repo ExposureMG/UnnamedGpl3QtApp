@@ -25,6 +25,9 @@ Kirigami.Dialog {
     readonly property var activeIds: operation ? FileBrowser.activeParameters(operation.handler, operation.id, values) : []
     readonly property string problem: operation ? FileBrowser.validateOperation(operation.handler, operation.id, values) : ""
     readonly property bool canRun: operation !== null && operation.available && problem === ""
+    // The values choose to rewrite the file in place.
+    readonly property bool changesFile: operation !== null && operation.modifiesSource
+                                        && FileBrowser.rewritesSource(operation.handler, operation.id, values)
 
     function openFor(name, availableOperations, index) {
         fileName = name;
@@ -63,7 +66,7 @@ Kirigami.Dialog {
     customFooterActions: [
         Kirigami.Action {
             text: root.operation ? root.operation.name : qsTr("Run")
-            icon.name: root.operation && root.operation.modifiesSource ? "document-save" : "system-run"
+            icon.name: root.changesFile ? "document-save" : "system-run"
             enabled: root.canRun
             onTriggered: root.run()
         }
@@ -109,7 +112,7 @@ Kirigami.Dialog {
 
         Kirigami.InlineMessage {
             Layout.fillWidth: true
-            visible: root.operation !== null && root.operation.modifiesSource && root.operation.available
+            visible: root.changesFile && root.operation.available
             type: Kirigami.MessageType.Warning
             text: qsTr("“%1” is changed in place. Keep a copy if it matters.").arg(root.fileName)
         }

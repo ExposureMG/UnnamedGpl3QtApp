@@ -66,7 +66,8 @@ class FileBrowser : public QObject {
     Q_PROPERTY(bool inspectFileSystem READ inspectFileSystem WRITE setInspectFileSystem NOTIFY inspectFileSystemChanged)
 
     // File tools (format-handler operations) for the selected file:
-    // [{handler, handlerName, id, name, description, modifiesSource, available,
+    // [{handler, handlerName, id, name, description, modifiesSource (may rewrite the
+    //   file; see rewritesSource() for the current values), available,
     //   unavailableReason, parameters:[{id, kind, label, help, defaultValue,
     //   options:[{id, label}], minimum, maximum, required, nameFilters, suggestedName}]}]
     // kind is "choice", "boolean", "integer", "text", "inputFile", "outputFile" or "outputFolder".
@@ -159,6 +160,9 @@ public:
     // Ids of the parameters in effect for these values (the others are hidden).
     Q_INVOKABLE QStringList activeParameters(const QString& handler, const QString& operation,
                                              const QVariantMap& values) const;
+    // Whether these values make the operation rewrite the file in place.
+    Q_INVOKABLE bool rewritesSource(const QString& handler, const QString& operation,
+                                    const QVariantMap& values) const;
     // Runs an operation on the file `fileName` of the current folder as a
     // background job; a report, if any, arrives as reportReady().
     Q_INVOKABLE void runFileOperation(const QString& fileName, const QString& handler, const QString& operation,
