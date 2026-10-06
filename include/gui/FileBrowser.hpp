@@ -42,6 +42,8 @@ class FileBrowser : public QObject {
     Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
     // Built with the FATX backend (-DUNNAMED_WITH_FATX=ON).
     Q_PROPERTY(bool fatxAvailable READ fatxAvailable CONSTANT)
+    // Built with the XEX tools (-DUNNAMED_WITH_XEX=ON).
+    Q_PROPERTY(bool xexAvailable READ xexAvailable CONSTANT)
     // Physical drives can be listed and opened on this platform (Linux for now).
     Q_PROPERTY(bool drivesAvailable READ drivesAvailable CONSTANT)
     // [{path, model, size, removable, readOnly, inUse, readable, xbox, layout, note}]
@@ -90,6 +92,7 @@ public:
     QString statusText() const;
     QString errorMessage() const { return m_errorMessage; }
     bool fatxAvailable() const;
+    bool xexAvailable() const;
     bool drivesAvailable() const;
     QVariantList drives() const { return m_drives; }
     bool drivesLoading() const { return m_drivesLoading; }
@@ -114,6 +117,8 @@ public:
     // Opening / switching filesystems.
     Q_INVOKABLE void openFolder(const QUrl& folder);
     Q_INVOKABLE void openDemo();
+    // Opens the host folder holding `file` as a place and selects the file.
+    Q_INVOKABLE void openFile(const QUrl& file);
     // Opens a FATX image read-only; every FATX partition in it (an Xbox 360
     // disk has several) becomes a place.
     Q_INVOKABLE void openFatxImage(const QUrl& file);

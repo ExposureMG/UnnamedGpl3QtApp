@@ -72,6 +72,7 @@ Kirigami.Page {
             onPropertiesRequested: root.app.showDetails(true)
             onOpenFolderRequested: root.app.openFolderDialog()
             onOpenFatxRequested: root.app.openFatxDialog()
+            onOpenXexRequested: root.app.openXexDialog()
         }
 
         Kirigami.Separator {
@@ -363,6 +364,10 @@ Kirigami.Page {
             onOpenFatxRequested: {
                 sidebarDrawer.close();
                 root.app.openFatxDialog();
+            }
+            onOpenXexRequested: {
+                sidebarDrawer.close();
+                root.app.openXexDialog();
             }
         }
     }

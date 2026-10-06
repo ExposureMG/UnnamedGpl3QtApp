@@ -195,6 +195,14 @@ bool FileBrowser::fatxAvailable() const {
 #endif
 }
 
+bool FileBrowser::xexAvailable() const {
+#ifdef UNNAMED_WITH_XEX
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool FileBrowser::drivesAvailable() const { return fatxAvailable() && core::drivesSupported(); }
 
 bool FileBrowser::has(core::Capability cap) const {
@@ -320,6 +328,14 @@ void FileBrowser::openFolder(const QUrl& folder) {
     const QString hostPath = folder.toLocalFile();
     const QString name = hostPath.section(QLatin1Char('/'), -1, -1, QString::SectionSkipEmpty);
     addMount(QStringLiteral("Local"), hostPath, name.isEmpty() ? hostPath : name);
+}
+
+void FileBrowser::openFile(const QUrl& file) {
+    const QFileInfo info(file.toLocalFile());
+    const QString folder = info.absolutePath();
+    openFolder(QUrl::fromLocalFile(folder));
+    if (isOpen() && m_mounts->indexOf(QStringLiteral("Local"), folder) == currentMount())
+        navigate(QStringLiteral("/"), info.fileName());
 }
 
 void FileBrowser::openDemo() {

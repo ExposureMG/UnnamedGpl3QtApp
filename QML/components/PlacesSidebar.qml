@@ -12,6 +12,7 @@ ColumnLayout {
     signal placeSelected
     signal openFolderRequested
     signal openFatxRequested
+    signal openXexRequested
 
     spacing: 0
 
@@ -185,6 +186,14 @@ ColumnLayout {
         text: qsTr("Open FATX Image…")
         icon.name: "drive-harddisk"
         onClicked: root.openFatxRequested()
+    }
+
+    QQC2.ToolButton {
+        Layout.fillWidth: true
+        visible: FileBrowser.xexAvailable
+        text: qsTr("Open XEX…")
+        icon.name: "application-x-executable"
+        onClicked: root.openXexRequested()
     }
 
     QQC2.ToolButton {

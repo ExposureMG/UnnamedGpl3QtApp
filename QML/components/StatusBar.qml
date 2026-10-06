@@ -16,6 +16,7 @@ QQC2.ToolBar {
     signal openFolderRequested
     signal openDemoRequested
     signal openFatxRequested
+    signal openXexRequested
     signal openDriveRequested
 
     position: QQC2.ToolBar.Header
@@ -100,6 +101,13 @@ QQC2.ToolBar {
                     visible: FileBrowser.fatxAvailable
                     height: visible ? implicitHeight : 0
                     onTriggered: root.openFatxRequested()
+                }
+                QQC2.MenuItem {
+                    text: qsTr("Open XEX…")
+                    icon.name: "application-x-executable"
+                    visible: FileBrowser.xexAvailable
+                    height: visible ? implicitHeight : 0
+                    onTriggered: root.openXexRequested()
                 }
                 QQC2.MenuItem {
                     text: qsTr("Open Drive…")

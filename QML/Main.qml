@@ -29,6 +29,7 @@ Kirigami.ApplicationWindow {
         onOpenFolderRequested: root.openFolderDialog()
         onOpenDemoRequested: FileBrowser.openDemo()
         onOpenFatxRequested: root.openFatxDialog()
+        onOpenXexRequested: root.openXexDialog()
         onOpenDriveRequested: root.openDriveDialog()
     }
 
@@ -76,6 +77,17 @@ Kirigami.ApplicationWindow {
         title: qsTr("Open FATX Image")
         nameFilters: [qsTr("Disk and partition images (*.img *.bin *.fatx *.raw *.dd)"), qsTr("All files (*)")]
         onAccepted: FileBrowser.openFatxImage(selectedFile)
+    }
+
+    // Opens the file's folder as a place, with the file selected and described.
+    FileDialog {
+        id: xexDialog
+        title: qsTr("Open XEX")
+        nameFilters: [qsTr("Xbox 360 executables (*.xex *.xexp)"), qsTr("All files (*)")]
+        onAccepted: {
+            FileBrowser.openFile(selectedFile);
+            root.showDetails(false);
+        }
     }
 
     DrivesDialog {
@@ -246,6 +258,10 @@ Kirigami.ApplicationWindow {
 
     function openFatxDialog() {
         fatxDialog.open();
+    }
+
+    function openXexDialog() {
+        xexDialog.open();
     }
 
     function openDriveDialog() {
