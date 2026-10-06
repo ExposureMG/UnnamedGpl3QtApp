@@ -246,9 +246,13 @@ unlocked; format needs type-to-confirm.
   Info only.
   Expanded view: executable, execution ID, security (machine, encryption,
   compression, regions, media, keys, sections), ratings, libraries,
-  resources. Tools: Info (the `-l` report or the summary, optionally saved),
-  Extract Basefile (`-b`), IDC Script (`-i`), Resources (`-d`), Decrypt and
-  Encrypt (`-e`), Compress / Decompress (`-c`: Normal, Basic, Uncompressed),
+  resources. Tools (15): Info (the `-l` report or the summary, optionally
+  saved), Extract Basefile (`-b`), IDC Script (`-i`), Resources (`-d`),
+  Decrypt and Encrypt (`-e`), Decompress (`-c u`, Basic, the default; or
+  `-c b`, Uncompressed, every byte stored) and Compress (`-c c`, LZX), which
+  refuse a run that would not change how the file is stored (Compress on an
+  LZX file; Decompress when the result would be the source byte for byte)
+  and write nothing then,
   Sign (`-m`: Devkit with the devkit key; Retail writes the cleared, all-zero
   signature, since no retail key exists), Apply Patch (`-p`), Remove Limits
   (`-r`), Add Bounding Path (`-a`), Fix Updated Executable (`-u`), Export and
@@ -269,7 +273,7 @@ unlocked; format needs type-to-confirm.
   as the bounding device id) gives a xex without them, where e965cd1 kept
   the unpatched xex's (`XexApi.h`, covered by the fork's `api_test`).
   Driven headless through the real QML on the golden samples: details,
-  Info, Decrypt, Encrypt, Compress, Sign (devkit and retail),
+  Info, Decrypt, Encrypt, Decompress, Compress, Sign (devkit and retail),
   Apply Patch, Remove Limits, Add Bounding Path and Resources write files
   with the golden record's hashes; in place on a host folder and on a
   writable FATX image (the result matches the command line and
@@ -280,6 +284,16 @@ unlocked; format needs type-to-confirm.
   documenting and testing it), except that quitting still waits for a
   running XexTool call. After the fixes, 224 crafted files and 4,000
   fuzzed inputs through the handler under ASan/UBSan gave no report.
+  First try with real files (copies of four homebrew executables, retail,
+  LZX compressed and encrypted): the details show every group, Info's
+  report reaches the dialog whole, and Decompress then Compress give the
+  command line's bytes. Two reports from it: Compress / Decompress defaulted
+  to LZX, so on an LZX file it silently wrote the same storage again; it is
+  now two tools, as above. Info "showed only the first lines": not
+  reproduced (offscreen, and on a virtual KWin Wayland session with the
+  user's fonts and scale), the report scrolls in its dialog; the dialog now
+  opens each report at its top (it kept the previous report's scroll
+  position), and its text can be selected and copied.
   **Not exposed**: special patches (`-s`, a per-title bit mask),
   the `-x` XML facts, `pack` (its input is an ELF), several edits in one run
   (run them one after another), extracting a subset of resources.

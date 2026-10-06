@@ -19,10 +19,12 @@ Two of six milestones are done: the app browses, extracts, writes and replaces f
 
 M2 is built on the app's `m2-xex` branch, on the XexTool fork's `xex-core` branch, and has been reviewed once.
 
-- File Tools run every XexTool operation except special patches, `-x` and `pack`, on a file in any place, and write files that match the command line's golden record byte for byte.
+- File Tools (15 for a xex) run every XexTool operation except special patches, `-x` and `pack`, on a file in any place, and write files that match the command line's golden record byte for byte.
+- After a first try with real files, Compress / Decompress, which defaulted to LZX and so silently recompressed an LZX file, is now two tools: Decompress (Basic, or Uncompressed with every byte stored) and Compress. Each refuses, writing nothing, a run that would not change how the file is stored.
+- A report that Info showed only its first lines was not reproduced: the whole report reaches the dialog and scrolls there, offscreen and on a virtual KWin Wayland session with the user's fonts. The dialog now opens each report at its top, where it used to keep the previous report's scroll position, and its text can be selected and copied.
 - A review by two independent agents found 12 problems, among them an output that could be the source itself, user files named `<output>.part` being destroyed, an empty patch reading a same-named file from the working directory, and an old, unhardened fork pinned by the submodule. All are fixed with regression tests, except that quitting still waits for a running XexTool call.
 - One known difference from XexTool before the library split: a patch whose headers drop restriction entries gives a xex without them. It is documented in `XexApi.h` and tested.
-- Not verified: real titles, consoles running the output, and real Windows. Under Wine, in-place edits on a host folder fail because the source is still open; that is not fixed.
+- Not verified: commercial titles, consoles running the output, and real Windows. Info, Decompress and Compress were tried on copies of four homebrew executables. Under Wine, in-place edits on a host folder fail because the source is still open; that is not fixed.
 
 ## What is built
 
