@@ -4,7 +4,6 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import QtQuick.Dialogs
-import QtCore
 import org.kde.kirigami as Kirigami
 import org.exposuremg.unnamed
 
@@ -28,6 +27,18 @@ Kirigami.Dialog {
     // The values choose to rewrite the file in place.
     readonly property bool changesFile: operation !== null && operation.modifiesSource
                                         && FileBrowser.rewritesSource(operation.handler, operation.id, values)
+    // Names of the output files in effect that exist already.
+    readonly property var replacedFiles: {
+        const out = [];
+        if (operation) {
+            for (const p of operation.parameters) {
+                const v = values[p.id];
+                if (p.kind === "outputFile" && activeIds.indexOf(p.id) >= 0 && v && FileBrowser.pathExists(v))
+                    out.push(FileBrowser.resolvePath(v).split("/").pop());
+            }
+        }
+        return out;
+    }
 
     function openFor(name, availableOperations, index) {
         fileName = name;
@@ -37,11 +48,14 @@ Kirigami.Dialog {
         open();
     }
 
+    // Results get their suggested name, in the folder FileBrowser.outputFolder() names.
     function resetValues() {
         const v = {};
         if (operation) {
-            for (const p of operation.parameters)
-                v[p.id] = p.defaultValue;
+            for (const p of operation.parameters) {
+                const suggested = (p.kind === "outputFile" || p.kind === "outputFolder") && p.defaultValue === "";
+                v[p.id] = suggested ? p.suggestedName : p.defaultValue;
+            }
         }
         values = v;
     }
@@ -62,6 +76,8 @@ Kirigami.Dialog {
     title: qsTr("File Tools")
     padding: Kirigami.Units.largeSpacing
     preferredWidth: Kirigami.Units.gridUnit * 28
+    // The same width for every tool; long help wraps.
+    maximumWidth: preferredWidth
     standardButtons: Kirigami.Dialog.Cancel
     customFooterActions: [
         Kirigami.Action {
@@ -108,13 +124,21 @@ Kirigami.Dialog {
             elide: Text.ElideMiddle
             color: Kirigami.Theme.disabledTextColor
             text: root.operation ? qsTr("%1 · %2").arg(root.fileName).arg(root.operation.handlerName) : root.fileName
+            textFormat: Text.PlainText
         }
 
         Kirigami.InlineMessage {
             Layout.fillWidth: true
-            visible: root.changesFile && root.operation.available
+            visible: root.changesFile && root.operation.available && FileBrowser.canReplace
             type: Kirigami.MessageType.Warning
             text: qsTr("“%1” is changed in place. Keep a copy if it matters.").arg(root.fileName)
+        }
+        Kirigami.InlineMessage {
+            objectName: "toolReplaces"
+            Layout.fillWidth: true
+            visible: root.replacedFiles.length > 0 && !root.changesFile
+            type: Kirigami.MessageType.Warning
+            text: qsTr("“%1” exists and will be replaced.").arg(root.replacedFiles.join("”, “"))
         }
         Kirigami.InlineMessage {
             Layout.fillWidth: true
@@ -134,7 +158,12 @@ Kirigami.Dialog {
                 readonly property var value: root.values[param.id]
                 // QQC2.SpinBox holds 32-bit values; wider ranges get a text field.
                 readonly property bool spinnable: param.minimum >= -2147483648 && param.maximum <= 2147483647
+                readonly property bool isFile: param.kind === "inputFile" || param.kind === "outputFile"
+                                               || param.kind === "outputFolder"
+                readonly property string resolved: isFile && value ? FileBrowser.resolvePath(String(value)) : ""
+                readonly property string resolvedFolder: resolved.substring(0, Math.max(1, resolved.lastIndexOf("/")))
 
+                objectName: "field_" + param.id
                 Layout.fillWidth: true
                 Layout.fillHeight: false
                 visible: root.activeIds.indexOf(param.id) >= 0
@@ -148,6 +177,7 @@ Kirigami.Dialog {
                 }
 
                 QQC2.ComboBox {
+                    objectName: "choice_" + field.param.id
                     Layout.fillWidth: true
                     visible: field.param.kind === "choice"
                     model: field.param.kind === "choice" ? field.param.options : []
@@ -165,6 +195,7 @@ Kirigami.Dialog {
                 }
 
                 QQC2.Switch {
+                    objectName: "switch_" + field.param.id
                     Layout.fillWidth: true
                     visible: field.param.kind === "boolean"
                     text: field.param.label
@@ -173,6 +204,8 @@ Kirigami.Dialog {
                 }
 
                 QQC2.SpinBox {
+                    objectName: "spin_" + field.param.id
+                    Layout.minimumWidth: Kirigami.Units.gridUnit * 7
                     visible: field.param.kind === "integer" && field.spinnable
                     editable: true
                     from: field.spinnable ? field.param.minimum : 0
@@ -190,19 +223,32 @@ Kirigami.Dialog {
                     spacing: Kirigami.Units.smallSpacing
 
                     QQC2.TextField {
+                        objectName: "text_" + field.param.id
                         Layout.fillWidth: true
                         text: field.value === undefined ? "" : String(field.value)
                         inputMethodHints: field.param.kind === "integer" ? Qt.ImhFormattedNumbersOnly : Qt.ImhNone
-                        placeholderText: field.param.kind === "outputFile" ? field.param.suggestedName : ""
+                        placeholderText: field.param.suggestedName
                         onTextEdited: root.setValue(field.param.id, text)
                     }
                     QQC2.Button {
-                        visible: field.param.kind === "inputFile" || field.param.kind === "outputFile"
-                                 || field.param.kind === "outputFolder"
-                        icon.name: field.param.kind === "outputFolder" ? "folder-open" : "document-open"
+                        objectName: "choose_" + field.param.id
+                        visible: field.isFile
+                        icon.name: field.param.kind === "outputFolder" ? "folder-open"
+                                 : field.param.kind === "outputFile" ? "document-save-as" : "document-open"
                         text: qsTr("Choose…")
                         onClicked: root.choose(field.param, field.value)
                     }
+                }
+
+                // Where a name without a folder goes.
+                QQC2.Label {
+                    objectName: "where_" + field.param.id
+                    Layout.fillWidth: true
+                    visible: field.isFile && field.resolved !== "" && field.resolved !== String(field.value).trim()
+                    text: qsTr("In %1").arg(field.resolvedFolder)
+                    elide: Text.ElideMiddle
+                    font: Kirigami.Theme.smallFont
+                    color: Kirigami.Theme.disabledTextColor
                 }
 
                 QQC2.Label {
@@ -228,36 +274,56 @@ Kirigami.Dialog {
 
     // --- pickers ---------------------------------------------------------------
 
-    readonly property url documentsFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
-
+    // Starts where the field points, or in FileBrowser.outputFolder().
     function choose(param, current) {
-        const chosen = current ? FileBrowser.fileUrl(current) : "";
+        const path = current ? FileBrowser.resolvePath(String(current)) : "";
+        const folder = FileBrowser.outputFolder();
+        const filters = param.nameFilters.length > 0 ? param.nameFilters : [qsTr("All files (*)")];
         if (param.kind === "outputFolder") {
             folderPicker.target = param.id;
-            if (current)
-                folderPicker.currentFolder = chosen;
+            folderPicker.currentFolder = path !== "" && FileBrowser.pathExists(path) ? FileBrowser.fileUrl(path) : folder;
             folderPicker.open();
-            return;
+        } else if (param.kind === "outputFile") {
+            const file = path !== "" ? path : FileBrowser.resolvePath(param.suggestedName);
+            savePicker.target = param.id;
+            savePicker.nameFilters = filters;
+            savePicker.currentFolder = FileBrowser.fileUrl(file.substring(0, file.lastIndexOf("/")) || "/");
+            savePicker.selectedFile = FileBrowser.fileUrl(file);
+            savePicker.open();
+        } else {
+            openPicker.target = param.id;
+            openPicker.nameFilters = filters;
+            openPicker.currentFolder = folder;
+            if (path !== "" && FileBrowser.pathExists(path))
+                openPicker.selectedFile = FileBrowser.fileUrl(path);
+            openPicker.open();
         }
-        filePicker.target = param.id;
-        filePicker.saving = param.kind === "outputFile";
-        filePicker.nameFilters = param.nameFilters.length > 0 ? param.nameFilters : [qsTr("All files (*)")];
-        if (filePicker.saving)
-            filePicker.selectedFile = current ? chosen : documentsFolder + "/" + param.suggestedName;
-        filePicker.open();
+    }
+
+    // One dialog per mode: Qt's own file dialog keeps the last picked name in
+    // its file name field, so a shared one offered an opened patch's name for
+    // saving.
+    FileDialog {
+        id: openPicker
+        objectName: "toolOpenPicker"
+        property string target: ""
+        title: qsTr("Choose File")
+        fileMode: FileDialog.OpenFile
+        onAccepted: root.setValue(target, FileBrowser.localPath(selectedFile))
     }
 
     FileDialog {
-        id: filePicker
+        id: savePicker
+        objectName: "toolSavePicker"
         property string target: ""
-        property bool saving: false
-        title: saving ? qsTr("Save As") : qsTr("Choose File")
-        fileMode: saving ? FileDialog.SaveFile : FileDialog.OpenFile
+        title: qsTr("Save As")
+        fileMode: FileDialog.SaveFile
         onAccepted: root.setValue(target, FileBrowser.localPath(selectedFile))
     }
 
     FolderDialog {
         id: folderPicker
+        objectName: "toolFolderPicker"
         property string target: ""
         title: qsTr("Choose Folder")
         onAccepted: root.setValue(target, FileBrowser.localPath(selectedFolder))

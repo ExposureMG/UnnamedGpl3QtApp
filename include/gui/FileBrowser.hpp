@@ -170,6 +170,13 @@ public:
     // Between the paths shown in text fields and the URLs of file pickers.
     Q_INVOKABLE QString localPath(const QUrl& url) const { return url.isLocalFile() ? url.toLocalFile() : url.toString(); }
     Q_INVOKABLE QUrl fileUrl(const QString& path) const { return QUrl::fromLocalFile(path); }
+    // Where the tools' pickers start and relative paths in their file fields
+    // point: the current folder when the place is a host folder, otherwise
+    // the Documents folder.
+    Q_INVOKABLE QUrl outputFolder() const { return QUrl::fromLocalFile(hostFolder()); }
+    // A file field's value as the absolute host path it stands for.
+    Q_INVOKABLE QString resolvePath(const QString& path) const;
+    Q_INVOKABLE bool pathExists(const QString& path) const;
 
 signals:
     void stateChanged();
@@ -197,6 +204,7 @@ private:
     std::shared_ptr<MountRuntime> runtime() const;
     bool has(core::Capability cap) const;
     QString selectedPath() const;
+    QString hostFolder() const;
     void addMount(const QString& kind, const QString& hostPath, const QString& name);
     void insertMount(Mount mount);
     // Opens every FATX partition on a device in the background and adds them as places.

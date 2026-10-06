@@ -10,9 +10,11 @@
 #include "core/Transfer.hpp"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QRunnable>
+#include <QStandardPaths>
 
 #include <cmath>
 
@@ -110,9 +112,20 @@ QVariantMap toVariant(const core::FormatHandler& handler, const core::OperationD
     };
 }
 
-// Dialog values to typed parameters. A value that does not fit its kind is
-// passed on as text, so validation names the problem.
-core::Parameters toParameters(const core::OperationDescriptor& op, const QVariantMap& values) {
+// A file field's text (a path, relative to `base`, or a file URL) as an absolute path.
+QString resolveHostPath(QString path, const QString& base) {
+    path = path.trimmed();
+    if (path.startsWith(QStringLiteral("file:")))
+        path = QUrl(path).toLocalFile();
+    if (path.isEmpty() || QDir::isAbsolutePath(path))
+        return path;
+    return QDir::cleanPath(QDir(base).filePath(path));
+}
+
+// Dialog values to typed parameters, file paths resolved against `base`. A
+// value that does not fit its kind is passed on as text, so validation names
+// the problem.
+core::Parameters toParameters(const core::OperationDescriptor& op, const QVariantMap& values, const QString& base) {
     core::Parameters out;
     for (auto it = values.begin(); it != values.end(); ++it) {
         const std::string id = it.key().toStdString();
@@ -139,10 +152,7 @@ core::Parameters toParameters(const core::OperationDescriptor& op, const QVarian
                 out[id] = v.toString().toStdString();
         } else if (kind == core::ParameterKind::InputFile || kind == core::ParameterKind::OutputFile ||
                    kind == core::ParameterKind::OutputFolder) {
-            QString path = v.toString().trimmed();
-            if (path.startsWith(QStringLiteral("file:")))
-                path = QUrl(path).toLocalFile();
-            out[id] = path.toStdString();
+            out[id] = resolveHostPath(v.toString(), base).toStdString();
         } else {
             out[id] = v.toString().toStdString();
         }
@@ -226,6 +236,22 @@ bool FileBrowser::selectedIsDirectory() const {
 
 QString FileBrowser::selectedPath() const {
     return QString::fromStdString(core::joinPath(m_model->path().toStdString(), m_selectedName.toStdString()));
+}
+
+QString FileBrowser::hostFolder() const {
+    if (isOpen()) {
+        const Mount& mount = m_mounts->at(currentMount());
+        if (mount.kind == QStringLiteral("Local") && !mount.hostPath.isEmpty())
+            return QDir::cleanPath(mount.hostPath + m_model->path());
+    }
+    return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+}
+
+QString FileBrowser::resolvePath(const QString& path) const { return resolveHostPath(path, hostFolder()); }
+
+bool FileBrowser::pathExists(const QString& path) const {
+    const QString resolved = resolvePath(path);
+    return !resolved.isEmpty() && QFileInfo::exists(resolved);
 }
 
 void FileBrowser::setInspectFileSystem(bool value) {
@@ -920,7 +946,7 @@ QString FileBrowser::validateOperation(const QString& handler, const QString& op
     const auto op = findOperation(handler, operation);
     if (!op)
         return tr("Unknown file tool: %1").arg(operation);
-    core::Parameters parameters = toParameters(*op, values);
+    core::Parameters parameters = toParameters(*op, values, hostFolder());
     const core::Status st = core::validateParameters(*op, parameters);
     if (!st)
         return QString::fromStdString(st.message);
@@ -931,7 +957,7 @@ QString FileBrowser::validateOperation(const QString& handler, const QString& op
 
 bool FileBrowser::rewritesSource(const QString& handler, const QString& operation, const QVariantMap& values) const {
     const auto op = findOperation(handler, operation);
-    return op && core::rewritesSource(*op, toParameters(*op, values));
+    return op && core::rewritesSource(*op, toParameters(*op, values, hostFolder()));
 }
 
 QStringList FileBrowser::activeParameters(const QString& handler, const QString& operation,
@@ -940,7 +966,7 @@ QStringList FileBrowser::activeParameters(const QString& handler, const QString&
     const auto op = findOperation(handler, operation);
     if (!op)
         return active;
-    const core::Parameters parameters = toParameters(*op, values);
+    const core::Parameters parameters = toParameters(*op, values, hostFolder());
     for (const core::ParameterDescriptor& p : op->parameters) {
         if (core::isParameterActive(*op, parameters, p.id))
             active.append(QString::fromStdString(p.id));
@@ -960,12 +986,14 @@ void FileBrowser::runFileOperation(const QString& fileName, const QString& handl
         setError(tr("Unknown file tool: %1").arg(operationId));
         return;
     }
-    core::Parameters parameters = toParameters(*op, values);
+    core::Parameters parameters = toParameters(*op, values, hostFolder());
     if (const core::Status st = core::validateParameters(*op, parameters); !st) {
         setError(QString::fromStdString(st.message));
         return;
     }
     const bool modifiesSource = core::rewritesSource(*op, parameters);
+    // New files may land in the folder on show.
+    const bool refresh = modifiesSource || core::writesOutputs(*op);
     if (modifiesSource && !has(core::Capability::Replace)) {
         setError(tr("%1 changes the file, but this place is read-only").arg(QString::fromStdString(op->name)));
         return;
@@ -988,10 +1016,13 @@ void FileBrowser::runFileOperation(const QString& fileName, const QString& handl
                    *report = result.value();
                return result.status();
            },
-           [this, title, fileName, modifiesSource, report](const core::Status& st) {
+           [this, title, name = op->name, fileName, refresh, report](core::Status st) {
                if (st && !report->empty())
                    emit reportReady(title, QString::fromStdString(*report));
-               if (modifiesSource)
+               if (!st && !st.cancelled)
+                   st.message = tr("%1 failed: %2").arg(QString::fromStdString(name), QString::fromStdString(st.message))
+                                    .toStdString();
+               if (refresh)
                    finishOperation(st, tr("%1: done").arg(title), fileName);
                else if (st && report->empty())
                    emit notice(tr("%1: done").arg(title));
