@@ -9,6 +9,9 @@
 
 #include <cctype>
 #include <cstdlib>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -30,6 +33,16 @@ namespace {
 std::string readFile(const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
     return std::string((std::istreambuf_iterator<char>(in)), {});
+}
+
+// Staging files a sink left in `dir` (".<name>.<random>.part").
+int stagingFiles(const fs::path& dir) {
+    int n = 0;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        const std::string name = pathToUtf8(entry.path().filename());
+        n += name.starts_with(".") && name.ends_with(".part");
+    }
+    return n;
 }
 
 ParameterDescriptor parameter(std::string id, ParameterKind kind, ParameterValue defaultValue) {
@@ -262,6 +275,80 @@ void testDescriptors() {
     CHECK(expandSuggestedName("{stem}", "noext") == "noext");
 }
 
+// Host file sinks stage into a file of their own and never touch the user's.
+void testFileSinks(const fs::path& root) {
+    const fs::path dir = root / "sinks";
+    fs::create_directories(dir);
+    auto write = [](const fs::path& path, bool overwrite, const std::string& data) {
+        auto sink = openFileSink(path, overwrite);
+        if (!sink)
+            return sink.status();
+        if (const Status st = sink.value()->write(data.data(), data.size()); !st)
+            return st;
+        return sink.value()->finish();
+    };
+
+    // "<name>.part" is just another file: kept when <name> is written, failed
+    // or dropped, and both can be written.
+    std::ofstream(dir / "game.xex.part") << "precious";
+    CHECK(write(dir / "game.xex", false, "new"));
+    CHECK(write(dir / "game.xex", true, "newer"));
+    {
+        auto dropped = openFileSink(dir / "game.xex", true);
+        CHECK(dropped && dropped.value()->write("x", 1));
+    }
+    CHECK(!write(dir / "game.xex", false, "refused"));
+    CHECK(readFile(dir / "game.xex.part") == "precious" && readFile(dir / "game.xex") == "newer");
+    CHECK(write(dir / "AB.part", false, "first") && write(dir / "AB", false, "second"));
+    CHECK(readFile(dir / "AB.part") == "first" && readFile(dir / "AB") == "second");
+    const std::string longName(250, 'n'); // no room for a suffix
+    CHECK(write(dir / longName, false, "long") && readFile(dir / longName) == "long");
+    CHECK(stagingFiles(dir) == 0);
+
+    // Without overwrite, a file that appears while the sink writes wins.
+    {
+        auto sink = openFileSink(dir / "race.bin", false);
+        CHECK(sink && sink.value()->write("mine", 4));
+        std::ofstream(dir / "race.bin") << "theirs";
+        const Status st = sink.value()->finish();
+        CHECK(!st && st.message.find("Already exists") == 0);
+    }
+    CHECK(readFile(dir / "race.bin") == "theirs" && stagingFiles(dir) == 0);
+
+#ifndef _WIN32
+    // Replacing keeps the file's mode; a link keeps pointing at the new
+    // contents; read-only files and files with other hard links are refused.
+    std::ofstream(dir / "private.bin") << "old";
+    fs::permissions(dir / "private.bin", fs::perms::owner_read | fs::perms::owner_write);
+    CHECK(write(dir / "private.bin", true, "new"));
+    CHECK(readFile(dir / "private.bin") == "new" &&
+          fs::status(dir / "private.bin").permissions() == (fs::perms::owner_read | fs::perms::owner_write));
+    fs::create_directories(dir / "elsewhere");
+    std::ofstream(dir / "elsewhere" / "real.bin") << "old";
+    fs::create_symlink(fs::path("elsewhere") / "real.bin", dir / "link.bin");
+    CHECK(write(dir / "link.bin", true, "through the link"));
+    CHECK(fs::is_symlink(fs::symlink_status(dir / "link.bin")));
+    CHECK(readFile(dir / "elsewhere" / "real.bin") == "through the link");
+    CHECK(stagingFiles(dir) == 0 && stagingFiles(dir / "elsewhere") == 0);
+    fs::create_symlink(fs::path("missing.bin"), dir / "dangling.bin");
+    CHECK(!write(dir / "dangling.bin", false, "x")); // the name is taken
+    std::ofstream(dir / "one.bin") << "shared";
+    fs::create_hard_link(dir / "one.bin", dir / "two.bin");
+    const Status linked = write(dir / "one.bin", true, "new");
+    CHECK(!linked && linked.message.find("other hard link") != std::string::npos);
+    CHECK(readFile(dir / "one.bin") == "shared" && readFile(dir / "two.bin") == "shared");
+    std::ofstream(dir / "locked.bin") << "old";
+    fs::permissions(dir / "locked.bin", fs::perms::owner_read);
+    if (::geteuid() != 0) {
+        const Status locked = write(dir / "locked.bin", true, "new");
+        CHECK(!locked && locked.message.find("read-only") != std::string::npos);
+        CHECK(readFile(dir / "locked.bin") == "old");
+    }
+    fs::permissions(dir / "locked.bin", fs::perms::owner_read | fs::perms::owner_write);
+#endif
+    CHECK(stagingFiles(dir) == 0);
+}
+
 void testChecksums() {
     Crc32 crc;
     crc.update("123456789", 9);
@@ -389,7 +476,7 @@ void testFormatHandlers(const fs::path& root) {
                           {{"range", std::string{"whole"}}, {"output", out + "/big.hex"}}, io, cancelLater);
     CHECK(!report && report.status().cancelled && calls > 1);
     CHECK(!fs::exists(dir / "out" / "big.hex"));
-    CHECK(!fs::exists(dir / "out" / "big.hex.part"));
+    CHECK(stagingFiles(dir / "out") == 0);
     report = runOperation(*generic, "checksum", local, "/big.bin", {}, io, [](const TransferProgress&) { return false; });
     CHECK(!report && report.status().cancelled);
     std::uint64_t lastDone = 0, total = 0;
@@ -503,7 +590,7 @@ int main() {
         CHECK(!local.openWrite("/dir/new.bin", 3, false));  // exists, no overwrite
         CHECK(local.openWrite("/dir/new.bin", 3, true));   // overwrite allowed (dropped = discarded)
         CHECK(fs::file_size(root / "dir" / "new.bin") == 3);
-        CHECK(!fs::exists(root / "dir" / "new.bin.part"));  // discarded sink cleans up
+        CHECK(stagingFiles(root / "dir") == 0);  // discarded sink cleans up
     }
     CHECK(local.makeDirectory("/dir/sub"));
     CHECK(!local.makeDirectory("/dir/sub"));
@@ -560,7 +647,7 @@ int main() {
         const Status st2 = copyTree(local, "/tree/one.txt", dest, "/cancelled.txt", cancel);
         CHECK(!st2 && st2.cancelled);
         CHECK(!fs::exists(root / "out" / "cancelled.txt"));
-        CHECK(!fs::exists(root / "out" / "cancelled.txt.part"));
+        CHECK(stagingFiles(root / "out") == 0);
 
         // Single file into a fresh name, and a missing source.
         CHECK(copyTree(local, "/tree/one.txt", dest, "/renamed-copy.txt"));
@@ -637,6 +724,7 @@ int main() {
 
     testDescriptors();
     testChecksums();
+    testFileSinks(root);
     testFormatHandlers(root);
 
     fs::remove_all(root);
