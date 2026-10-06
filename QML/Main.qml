@@ -39,6 +39,8 @@ Kirigami.ApplicationWindow {
         modal: true
         width: Kirigami.Units.gridUnit * 14
         handleVisible: false
+        // Kirigami slides a hidden handle only most of the way off the edge.
+        Component.onCompleted: handle.visible = false
 
         actions: [
             Kirigami.Action {
@@ -103,12 +105,15 @@ Kirigami.ApplicationWindow {
         property alias text: reportText.text
         standardButtons: Kirigami.Dialog.Close
         padding: Kirigami.Units.largeSpacing
-        preferredWidth: Kirigami.Units.gridUnit * 28
+        preferredWidth: Kirigami.Units.gridUnit * 34
+        maximumWidth: preferredWidth
 
+        // Reports line up columns with spaces.
         QQC2.Label {
             id: reportText
             wrapMode: Text.Wrap
             textFormat: Text.PlainText
+            font: Kirigami.Theme.fixedWidthFont
         }
     }
 
@@ -206,6 +211,9 @@ Kirigami.ApplicationWindow {
         id: globalErrorDialog
         title: qsTr("Error")
         subtitle: ""
+        // Long messages wrap instead of widening the dialog to the window.
+        preferredWidth: Kirigami.Units.gridUnit * 26
+        maximumWidth: preferredWidth
         standardButtons: Kirigami.Dialog.NoButton
         showCloseButton: true
     }

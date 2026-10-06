@@ -347,6 +347,8 @@ Kirigami.Page {
         modal: true
         handleVisible: false
         width: Kirigami.Units.gridUnit * 14
+        // Kirigami slides a hidden handle only most of the way off the edge.
+        Component.onCompleted: handle.visible = false
 
         contentItem: PlacesSidebar {
             onPlaceSelected: sidebarDrawer.close()

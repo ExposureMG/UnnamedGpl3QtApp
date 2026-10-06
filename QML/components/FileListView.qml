@@ -4,13 +4,14 @@ import QtQuick.Controls as QQC2
 import org.kde.kirigami as Kirigami
 import org.exposuremg.unnamed
 
-// Details-style list with sortable column headers. Compact widths hide the
-// secondary columns.
+// Details-style list with sortable column headers. Narrower widths hide the
+// secondary columns, Type first, so the name keeps room.
 ColumnLayout {
     id: root
 
     property alias view: list
     readonly property bool compact: width < Kirigami.Units.gridUnit * 30
+    readonly property bool showKind: width >= Kirigami.Units.gridUnit * 44
     readonly property int kindWidth: Kirigami.Units.gridUnit * 11
     readonly property int sizeWidth: Kirigami.Units.gridUnit * 6
     readonly property int modifiedWidth: Kirigami.Units.gridUnit * 9
@@ -73,7 +74,7 @@ ColumnLayout {
         }
         SortHeader {
             Layout.preferredWidth: root.kindWidth
-            visible: !root.compact
+            visible: root.showKind
             text: qsTr("Type")
             key: FileSystemModel.SortByKind
         }
@@ -162,7 +163,7 @@ ColumnLayout {
                 }
                 QQC2.Label {
                     Layout.preferredWidth: root.kindWidth
-                    visible: !root.compact
+                    visible: root.showKind
                     text: entry.kindLabel
                     elide: Text.ElideRight
                     color: entry.highlighted ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.disabledTextColor

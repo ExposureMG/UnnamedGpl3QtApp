@@ -47,11 +47,13 @@ ColumnLayout {
                 Layout.fillWidth: true
                 level: 2
                 text: root.details.title || ""
+                textFormat: Text.PlainText
                 wrapMode: Text.WrapAnywhere
             }
             QQC2.Label {
                 Layout.fillWidth: true
                 text: root.details.subtitle || ""
+                textFormat: Text.PlainText
                 color: Kirigami.Theme.disabledTextColor
                 elide: Text.ElideRight
             }
@@ -132,6 +134,7 @@ ColumnLayout {
                             Layout.preferredWidth: Kirigami.Units.gridUnit * 8
                             Layout.alignment: Qt.AlignTop
                             text: row.modelData.label
+                            textFormat: Text.PlainText
                             color: Kirigami.Theme.disabledTextColor
                             wrapMode: Text.Wrap
                         }
@@ -139,7 +142,8 @@ ColumnLayout {
                             Layout.fillWidth: true
                             Layout.alignment: Qt.AlignTop
                             text: row.modelData.value
-                            wrapMode: Text.WrapAnywhere
+                            textFormat: Text.PlainText
+                            wrapMode: Text.Wrap
                         }
                     }
                 }

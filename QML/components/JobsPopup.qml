@@ -8,7 +8,9 @@ import org.exposuremg.unnamed
 QQC2.Popup {
     id: root
 
-    width: Kirigami.Units.gridUnit * 26
+    // Kept inside a narrow window.
+    width: Math.min(Kirigami.Units.gridUnit * 26, parent ? parent.Window.width - 2 * margins : Infinity)
+    margins: Kirigami.Units.smallSpacing
     height: Math.min(contentItem.implicitHeight + topPadding + bottomPadding, Kirigami.Units.gridUnit * 22)
     padding: Kirigami.Units.largeSpacing
     closePolicy: QQC2.Popup.CloseOnEscape | QQC2.Popup.CloseOnPressOutsideParent
@@ -72,6 +74,7 @@ QQC2.Popup {
                         elide: Text.ElideMiddle
                     }
                     QQC2.ToolButton {
+                        objectName: "cancelJob_" + job.index
                         visible: job.active
                         icon.name: "process-stop"
                         display: QQC2.AbstractButton.IconOnly
