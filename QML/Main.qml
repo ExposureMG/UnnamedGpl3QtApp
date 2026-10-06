@@ -111,21 +111,50 @@ Kirigami.ApplicationWindow {
         onActivated: Qt.quit()
     }
 
-    // Results of long operations, e.g. a filesystem health check.
+    // Results of long operations, e.g. a filesystem health check or a file
+    // tool's report. A long report scrolls inside a dialog no taller than the
+    // window; its text can be selected and copied.
     Kirigami.Dialog {
         id: reportDialog
+        objectName: "reportDialog"
         property alias text: reportText.text
         standardButtons: Kirigami.Dialog.Close
         padding: Kirigami.Units.largeSpacing
         preferredWidth: Kirigami.Units.gridUnit * 34
         maximumWidth: preferredWidth
+        customFooterActions: [
+            Kirigami.Action {
+                text: qsTr("Copy")
+                icon.name: "edit-copy"
+                onTriggered: {
+                    reportText.selectAll();
+                    reportText.copy();
+                    reportText.deselect();
+                    root.showPassiveNotification(qsTr("Copied to the clipboard"));
+                }
+            }
+        ]
+
+        // Each report starts at its top, not where the previous one was
+        // scrolled to.
+        onAboutToShow: {
+            const view = (contentItem as QQC2.ScrollView)?.contentItem as Flickable;
+            if (view)
+                view.contentY = 0;
+        }
 
         // Reports line up columns with spaces.
-        QQC2.Label {
+        TextEdit {
             id: reportText
-            wrapMode: Text.Wrap
-            textFormat: Text.PlainText
+            objectName: "reportText"
+            readOnly: true
+            selectByMouse: true
+            wrapMode: TextEdit.Wrap
+            textFormat: TextEdit.PlainText
             font: Kirigami.Theme.fixedWidthFont
+            color: Kirigami.Theme.textColor
+            selectionColor: Kirigami.Theme.highlightColor
+            selectedTextColor: Kirigami.Theme.highlightedTextColor
         }
     }
 
