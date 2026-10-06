@@ -60,7 +60,7 @@ public:
 
 // Host paths for inputs and outputs (UTF-8). An OutputFile replaces an
 // existing file (the save dialog asked); a file in an OutputFolder does not,
-// and its name must be a plain name. The source is replaced through its
+// and its name must be a plain name. A missing OutputFolder is created. The source is replaced through its
 // FileSystem (`sourceFs` may be null when nothing may be replaced).
 class HostOperationIo final : public OperationIo {
 public:
@@ -80,7 +80,7 @@ private:
 // Paths inside a FileSystem for inputs and outputs (a FATX place, another
 // host folder, ...), with the same rules as HostOperationIo: an OutputFile
 // replaces an existing file, a file in an OutputFolder does not and must have
-// a plain name. Both filesystems must outlive the object.
+// a plain name, and a missing OutputFolder is created (its parent must exist). Both filesystems must outlive the object.
 class FileSystemOperationIo final : public OperationIo {
 public:
     FileSystemOperationIo(FileSystem& target, FileSystem* sourceFs, std::string sourcePath)

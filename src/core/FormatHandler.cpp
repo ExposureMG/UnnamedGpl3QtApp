@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <system_error>
 
 namespace unnamed::core {
 
@@ -83,7 +84,11 @@ Result<std::unique_ptr<ByteSink>> HostOperationIo::createOutput(const std::strin
         return openFileSink(pathFromUtf8(location), true);
     if (const Status st = checkPlainName(name); !st)
         return st;
-    return openFileSink(pathFromUtf8(location) / pathFromUtf8(name), false);
+    const std::filesystem::path folder = pathFromUtf8(location);
+    std::error_code ec;
+    if (!std::filesystem::is_directory(folder, ec) && !std::filesystem::create_directories(folder, ec))
+        return Status::failure("Cannot create the folder " + location + (ec ? ": " + ec.message() : ""));
+    return openFileSink(folder / pathFromUtf8(name), false);
 }
 
 Result<std::unique_ptr<ByteSink>> HostOperationIo::replaceSource(std::optional<std::uint64_t> size) {
@@ -107,6 +112,10 @@ Result<std::unique_ptr<ByteSink>> FileSystemOperationIo::createOutput(const std:
         return m_target.openWrite(location, size, true);
     if (const Status st = checkPlainName(name); !st)
         return st;
+    if (Entry entry; !m_target.stat(location, entry)) {
+        if (const Status st = m_target.makeDirectory(location); !st)
+            return st;
+    }
     return m_target.openWrite(joinPath(location, name), size, false);
 }
 

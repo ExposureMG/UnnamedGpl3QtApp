@@ -210,7 +210,8 @@ void testDescriptors() {
     // A chain of conditions: out is required only when mode = b and count = 3.
     values = {{"mode", std::string{"b"}}, {"count", std::int64_t{3}}};
     CHECK(isParameterActive(op, values, "out"));
-    CHECK(!validateParameters(op, values));
+    const Status noOut = validateParameters(op, values);
+    CHECK(!noOut && noOut.message == "No out chosen");
     values = {{"mode", std::string{"b"}}, {"count", std::int64_t{3}}, {"out", std::string{"/tmp/x"}}};
     CHECK(validateParameters(op, values));
     values = {{"mode", std::string{"a"}}, {"count", std::int64_t{3}}};
@@ -241,6 +242,19 @@ void testDescriptors() {
     CHECK(brokenEdit([](OperationDescriptor& o) { o.modifiesSourceWhen.parameter = "nope"; }));
     CHECK(brokenEdit([](OperationDescriptor& o) { o.modifiesSourceWhen.values.clear(); }));
     CHECK(brokenEdit([](OperationDescriptor& o) { o.modifiesSourceWhen.values = {std::string{"3"}}; }));
+
+    // A check across parameters runs after the others.
+    OperationDescriptor both = op;
+    both.checkValues = [](const Parameters& v) {
+        return std::get<std::string>(v.at("mode")) == "a" ? Status::failure("not a") : Status::success();
+    };
+    values = {{"mode", std::string{"a"}}};
+    const Status notA = validateParameters(both, values);
+    CHECK(!notA && notA.message == "not a");
+    values = {{"mode", std::string{"b"}}, {"count", std::int64_t{0}}};
+    CHECK(validateParameters(both, values).message != "not a"); // count is checked first
+    values = {{"mode", std::string{"b"}}, {"count", std::int64_t{9}}};
+    CHECK(validateParameters(both, values));
 
     CHECK(expandSuggestedName("{stem}.bin", "default.xex") == "default.bin");
     CHECK(expandSuggestedName("{name}.txt", "default.xex") == "default.xex.txt");
@@ -400,6 +414,11 @@ void testFormatHandlers(const fs::path& root) {
     CHECK(!runOperation(*test, "concat", local, "/item.tst",
                         {{"input", pathToUtf8(dir / "nope")}, {"prefix", std::string{"x"}}, {"folder", out}}, itemIo));
     CHECK(!fs::exists(dir / "out" / "x.bin"));
+    // A missing output folder is created; a file in its place is refused.
+    CHECK(runOperation(*test, "concat", local, "/item.tst", {{"input", extra}, {"folder", out + "/new/deeper"}}, itemIo));
+    CHECK(readFile(dir / "out" / "new" / "deeper" / "joined.bin") == "TST1 body+extra");
+    CHECK(!runOperation(*test, "concat", local, "/item.tst",
+                        {{"input", extra}, {"folder", out + "/joined.bin"}, {"prefix", std::string{"y"}}}, itemIo));
 
     // Rewriting the source needs a filesystem that allows it.
     CHECK(runOperation(*test, "upper", local, "/item.tst", {}, itemIo));
@@ -431,6 +450,12 @@ void testFormatHandlers(const fs::path& root) {
     CHECK(runOperation(*test, "concat", local, "/item.tst", inOther, otherIo));
     CHECK(readFile(dir / "other" / "sub" / "joined.bin") == "TST1 BODY+more");
     CHECK(!runOperation(*test, "concat", local, "/item.tst", inOther, otherIo)); // exists
+    Parameters newFolder = inOther;
+    newFolder["folder"] = std::string{"/made"};
+    CHECK(runOperation(*test, "concat", local, "/item.tst", newFolder, otherIo));
+    CHECK(readFile(dir / "other" / "made" / "joined.bin") == "TST1 BODY+more");
+    newFolder["folder"] = std::string{"/no/parent"};
+    CHECK(!runOperation(*test, "concat", local, "/item.tst", newFolder, otherIo));
     Parameters escaping = inOther;
     escaping["prefix"] = std::string{"../up"};
     CHECK(!runOperation(*test, "concat", local, "/item.tst", escaping, otherIo));

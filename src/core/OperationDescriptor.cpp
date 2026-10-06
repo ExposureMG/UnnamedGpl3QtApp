@@ -1,6 +1,7 @@
 #include "core/OperationDescriptor.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <set>
 
 namespace unnamed::core {
@@ -29,6 +30,13 @@ bool isFileKind(ParameterKind kind) {
            kind == ParameterKind::OutputFolder;
 }
 
+// "Output file" -> "output file", but "IDC script" stays.
+std::string lowerFirst(std::string text) {
+    if (text.size() > 1 && std::islower(static_cast<unsigned char>(text[1])))
+        text[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(text[0])));
+    return text;
+}
+
 bool hasOption(const ParameterDescriptor& p, const std::string& id) {
     return std::any_of(p.options.begin(), p.options.end(), [&](const ChoiceOption& o) { return o.id == id; });
 }
@@ -52,7 +60,7 @@ Status checkValue(const ParameterDescriptor& p, const ParameterValue& value) {
         break;
     default:
         if (p.required && std::get<std::string>(value).empty())
-            return Status::failure(isFileKind(p.kind) ? "Choose " + label : label + " is required");
+            return Status::failure(isFileKind(p.kind) ? "No " + lowerFirst(label) + " chosen" : label + " is required");
         break;
     }
     return Status::success();
@@ -145,7 +153,7 @@ Status validateParameters(const OperationDescriptor& operation, Parameters& valu
         if (const Status st = checkValue(p, values.at(p.id)); !st)
             return st;
     }
-    return Status::success();
+    return operation.checkValues ? operation.checkValues(values) : Status::success();
 }
 
 bool isParameterActive(const OperationDescriptor& operation, const Parameters& values, const std::string& id) {

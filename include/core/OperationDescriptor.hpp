@@ -60,8 +60,9 @@ struct ParameterDescriptor {
     bool required = false;
     // File kinds: picker filters, e.g. "Title updates (*.xexp)".
     std::vector<std::string> nameFilters;
-    // OutputFile: name offered in the save dialog; "{name}" and "{stem}" stand
-    // for the source's file name with and without its extension.
+    // OutputFile and OutputFolder: the name offered for the result; "{name}"
+    // and "{stem}" stand for the source's file name with and without its
+    // extension.
     std::string suggestedName;
     Condition visibleWhen;
 };
@@ -80,6 +81,9 @@ struct OperationDescriptor {
     // Which files the operation applies to, beyond its handler recognising
     // them; empty means every file the handler recognises.
     std::function<bool(const FileProbe&)> appliesTo;
+    // A check across parameters (at least one of several switches on, say),
+    // run on complete values that passed the per-parameter checks.
+    std::function<Status(const Parameters&)> checkValues;
 };
 
 // Checks the descriptor itself: unique non-empty ids, defaults of the right
@@ -90,7 +94,8 @@ Status validateDescriptor(const OperationDescriptor& operation);
 
 // Checks `values` against the descriptor and fills in defaults for missing
 // parameters. Unknown ids and values of the wrong type are refused; bounds,
-// options and `required` are checked only for active parameters.
+// options and `required` are checked only for active parameters, and then
+// `checkValues` runs.
 Status validateParameters(const OperationDescriptor& operation, Parameters& values);
 
 // Whether a parameter is in effect for these values (see Condition).
