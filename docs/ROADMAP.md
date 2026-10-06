@@ -197,11 +197,12 @@ unlocked; format needs type-to-confirm.
   expanded view and offers operations described as data
   (`OperationDescriptor.hpp`: choice, boolean, integer with bounds, text,
   input file, output file, output folder; defaults, help, picker filters,
-  suggested output names, conditions on an earlier parameter). Values are
-  type-checked and validated in the core; `runOperation()` reads the source
-  as a stream from any `FileSystem` and writes outputs through
-  `OperationIo` (host paths today; files in an output folder must have
-  plain names and are never overwritten). Operations that rewrite the
+  suggested output names, conditions on an earlier parameter, a check
+  across parameters). Values are type-checked and validated in the core;
+  `runOperation()` reads the source as a stream from any `FileSystem` and
+  writes outputs through `OperationIo` (host paths today; files in an output
+  folder must have plain names and are never overwritten; a missing output
+  folder is created). Operations that rewrite the
   source need `Capability::Replace`; one may do so only on request
   (`modifiesSourceWhen`, e.g. a *Write to: a new file / in place* choice),
   and then stays available on read-only places with in place refused.
@@ -215,9 +216,18 @@ unlocked; format needs type-to-confirm.
 - [x] GUI: *File Tools…* (context menu, details page) appears when a handler
   has tools for the selected file; one dialog renders any operation,
   validates through the core and runs it as a cancellable job in
-  Transfers. Checked headless with screenshots (checksum, hex dump,
-  conditional fields, narrow window). **Not verified**: the native file
-  pickers, which a headless run cannot drive
+  Transfers. Results are filled in with their suggested names; a name
+  without a folder means the current folder when the place is a host
+  folder, otherwise Documents, and the dialog says which and warns before
+  replacing a file. The pickers start there. The listing and details are
+  read again after a tool writes. *Open XEX…* (Open menu, Places) opens
+  the file's folder as a place with the file selected and described.
+  Checked headless with screenshots (checksum, hex dump, conditional
+  fields, typing into the fields, cancel from Transfers, narrow window),
+  with Qt's own file and folder dialogs, which an offscreen run gets.
+  **Not verified**: the platform's native pickers (KDE, Windows, macOS);
+  Qt's own save dialog leaves the file name empty instead of showing the
+  suggested one
 - [x] XEX handler (`XexHandler`, `-DUNNAMED_WITH_XEX=ON`) on the XexTool
   fork's `xextool_core` (branch `xex-core`, only `XexApi.h` included).
   Recognises XEX2 (and XEX1, which XexTool cannot read: no tools) by magic.
@@ -236,12 +246,18 @@ unlocked; format needs type-to-confirm.
   write. `tests/xex_tests.cpp` runs each tool over the fork's golden samples
   and compares SHA-256 and report text with the CLI's golden record
   (`extern/XexTool/tests/golden/expected.txt`); passes in Debug and under
-  ASan/UBSan. Checked headless in the GUI (details, tool dialog, in-place
-  warning). **Not exposed**: special patches (`-s`, a per-title bit mask),
+  ASan/UBSan. Driven headless through the real QML on the golden samples:
+  details, Info, Decrypt, Encrypt, Compress, Sign (devkit and retail),
+  Apply Patch, Remove Limits, Add Bounding Path and Resources write files
+  with the golden record's hashes; in place on a host folder and on a
+  writable FATX image (the result matches the command line and
+  `fsck.fatx` is clean); in place is refused on a read-only image and when
+  FATX cannot fit a larger file; damaged files give named errors.
+  **Not exposed**: special patches (`-s`, a per-title bit mask),
   the `-x` XML facts, `pack` (its input is an ELF), several edits in one run
   (run them one after another), extracting a subset of resources.
-  **Not verified**: real console titles, consoles running the output, and
-  writing results to a FATX place from the GUI
+  **Not verified**: real console titles and consoles running the output.
+  The GUI writes new files to host paths only
 
 ## Risks
 
