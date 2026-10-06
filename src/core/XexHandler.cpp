@@ -204,18 +204,36 @@ std::string writtenTo(OperationContext& ctx) {
 
 using EditCall = std::function<xt::Status(const xt::Input&, const xt::Output&, xt::EditResult*)>;
 
+// Optional checks around an edit: `before` sees the source and may refuse
+// before XexTool runs; `after` sees the source and the result and may refuse
+// before anything is written.
+struct EditChecks {
+    std::function<Status(const xt::Input& source)> before;
+    std::function<Status(const xt::Bytes& source, const xt::Bytes& result)> after;
+};
+
 // Reads the source, runs one XexTool edit into memory and writes the result.
-Result<std::string> runEdit(OperationContext& ctx, const EditCall& call, const std::string& note = {}) {
+Result<std::string> runEdit(OperationContext& ctx, const EditCall& call, const std::string& note = {},
+                            const EditChecks& checks = {}) {
     auto data = readSource(ctx);
     if (!data)
         return data.status();
     if (!keepGoing(ctx, "processing"))
         return Status::cancelledByUser();
+    const xt::Input source = memoryInput(data.value(), ctx.sourceName());
+    if (checks.before) {
+        if (const Status st = checks.before(source); !st)
+            return st;
+    }
     xt::Bytes out;
     xt::EditResult result;
-    const xt::Status st = call(memoryInput(data.value(), ctx.sourceName()), xt::Output::memory(out), &result);
+    const xt::Status st = call(source, xt::Output::memory(out), &result);
     if (!st)
         return apiFailure(st);
+    if (checks.after) {
+        if (const Status checked = checks.after(data.value(), out); !checked)
+            return checked;
+    }
     if (!keepGoing(ctx, "writing"))
         return Status::cancelledByUser();
     if (const Status written = writeXex(ctx, out); !written)
@@ -339,20 +357,27 @@ OperationDescriptor encryptOperation() {
     return op;
 }
 
-OperationDescriptor compressionOperation() {
-    auto op = makeOperation("compression", "Compress / Decompress",
-                            "Writes the executable with its basefile stored another way (XexTool -c).");
-    auto format = makeParameter(
-        "format", ParameterKind::Choice, "Storage", std::string{"normal"},
-        "Normal compresses the basefile with LZX (XexTool -c c). Basic stores it without compression but leaves "
-        "out runs of zeros; XexTool calls this \"uncompressed\" (-c u). Uncompressed stores every byte; XexTool "
-        "calls this \"binary\" (-c b). Basic and Uncompressed are the same basefile format, so a file written "
-        "Uncompressed shows as Basic afterwards.");
-    format.options = {{"normal", "Normal (LZX compressed)"},
-                      {"basic", "Basic (zeros left out)"},
-                      {"uncompressed", "Uncompressed (every byte stored)"}};
-    op.parameters = {format};
-    addDestination(op, "{stem}.out.xex");
+OperationDescriptor decompressOperation() {
+    auto op = makeOperation("decompress", "Decompress",
+                            "Writes the executable with its basefile stored without compression (XexTool -c u or "
+                            "-c b). The file gets larger.");
+    auto storage = makeParameter(
+        "storage", ParameterKind::Choice, "Storage", std::string{"basic"},
+        "Basic stores the basefile without compression but leaves out runs of zeros (XexTool -c u, which XexTool "
+        "calls \"uncompressed\"). Uncompressed stores every byte, zeros too, so the file is larger (XexTool -c b, "
+        "\"binary\"). Both are the same format and read back the same way, so afterwards the details show either "
+        "one as Basic (and XexTool -l as Uncompressed).");
+    storage.options = {{"basic", "Basic (zeros left out)"}, {"uncompressed", "Uncompressed (every byte stored)"}};
+    op.parameters = {storage};
+    addDestination(op, "{stem}.decompressed.xex");
+    return op;
+}
+
+OperationDescriptor compressOperation() {
+    auto op = makeOperation("compress", "Compress",
+                            "Writes the executable with its basefile compressed with LZX, the Normal storage of "
+                            "retail titles (XexTool -c c). The file gets smaller.");
+    addDestination(op, "{stem}.compressed.xex");
     return op;
 }
 
@@ -617,12 +642,57 @@ Result<std::string> runResources(OperationContext& ctx) {
            " to " + ctx.text("folder") + ":\n" + names;
 }
 
-xt::Compression compressionChoice(const std::string& id) {
-    if (id == "basic")
-        return xt::Compression::Basic;
-    if (id == "uncompressed")
-        return xt::Compression::Uncompressed;
-    return xt::Compression::Normal;
+// How Compress and Decompress store the basefile, in the words of their options.
+std::string storageText(xt::Compression c) {
+    switch (c) {
+    case xt::Compression::Normal: return "LZX compressed";
+    case xt::Compression::Basic: return "Basic, zeros left out";
+    case xt::Compression::Uncompressed: return "Uncompressed, every byte stored";
+    default: return compressionText(c);
+    }
+}
+
+// Compress (Normal) and Decompress (Basic or Uncompressed). A run that would
+// not change how the file is stored is refused and writes nothing: Compress
+// on a file that is LZX compressed already (compressing it again gives other
+// bytes but the same storage), Decompress when the result is the source
+// byte for byte.
+Result<std::string> runStorage(OperationContext& ctx, xt::Compression compression) {
+    const std::string name = ctx.sourceName();
+    std::uint64_t before = 0, after = 0;
+    EditChecks checks;
+    if (compression == xt::Compression::Normal) {
+        checks.before = [&](const xt::Input& source) {
+            xt::XexInfo info;
+            xt::ReadInfoParams params;
+            params.xex = source;
+            if (xt::readInfo(params, info) && info.compression == xt::Compression::Normal)
+                return Status::failure(name + " is already LZX compressed, so nothing was written. Decompress "
+                                              "stores it without compression.");
+            return Status::success();
+        };
+    }
+    checks.after = [&](const xt::Bytes& source, const xt::Bytes& result) {
+        before = source.size();
+        after = result.size();
+        if (result == source)
+            return Status::failure(name + " is already stored that way (" + storageText(compression) +
+                                   "), so nothing was written.");
+        return Status::success();
+    };
+    auto report = runEdit(
+        ctx,
+        [&](const xt::Input& xex, const xt::Output& out, xt::EditResult* result) {
+            xt::ConvertParams params;
+            params.xex = xex;
+            params.output = out;
+            params.compression = compression;
+            return xt::convert(params, result);
+        },
+        {}, checks);
+    if (report)
+        report.value() += "Size: " + byteCount(after) + ", was " + byteCount(before) + ".\n";
+    return report;
 }
 
 Result<std::string> runConvert(OperationContext& ctx, xt::Compression compression, xt::Encryption encryption) {
@@ -928,10 +998,10 @@ Status XexHandler::describe(ByteSource& source, const FileProbe& file, std::vect
 }
 
 std::vector<OperationDescriptor> XexHandler::operations() const {
-    return {infoOperation(),     basefileOperation(), idcOperation(),          resourcesOperation(),
-            decryptOperation(),  encryptOperation(),  compressionOperation(),  machineOperation(),
-            patchOperation(),    limitsOperation(),   boundingPathOperation(), updateFixOperation(),
-            exportInfoOperation(), importInfoOperation()};
+    return {infoOperation(),       basefileOperation(),   idcOperation(),      resourcesOperation(),
+            decryptOperation(),    encryptOperation(),    decompressOperation(), compressOperation(),
+            machineOperation(),    patchOperation(),      limitsOperation(),   boundingPathOperation(),
+            updateFixOperation(),  exportInfoOperation(), importInfoOperation()};
 }
 
 Result<std::string> XexHandler::run(const std::string& operationId, OperationContext& context) const {
@@ -947,8 +1017,11 @@ Result<std::string> XexHandler::run(const std::string& operationId, OperationCon
         return runConvert(context, xt::Compression::Keep, xt::Encryption::Decrypted);
     if (operationId == "encrypt")
         return runConvert(context, xt::Compression::Keep, xt::Encryption::Encrypted);
-    if (operationId == "compression")
-        return runConvert(context, compressionChoice(context.text("format")), xt::Encryption::Keep);
+    if (operationId == "decompress")
+        return runStorage(context, context.text("storage") == "uncompressed" ? xt::Compression::Uncompressed
+                                                                              : xt::Compression::Basic);
+    if (operationId == "compress")
+        return runStorage(context, xt::Compression::Normal);
     if (operationId == "machine")
         return runMachine(context);
     if (operationId == "patch")

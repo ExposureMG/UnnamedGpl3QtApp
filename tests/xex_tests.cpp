@@ -329,10 +329,23 @@ void testDescriptors(const FormatHandler& xex) {
             CHECK(rewritesSource(op, {{"target", std::string{"source"}}}));
         }
     }
-    const std::vector<std::string> expected = {"info",    "basefile", "idc",    "resources",    "decrypt",
-                                               "encrypt", "compression", "machine", "patch", "limits",
-                                               "boundingPath", "updateFix", "exportInfo", "importInfo"};
+    const std::vector<std::string> expected = {"info",    "basefile",   "idc",      "resources", "decrypt",
+                                               "encrypt", "decompress", "compress", "machine",   "patch",
+                                               "limits",  "boundingPath", "updateFix", "exportInfo", "importInfo"};
     CHECK(ids == expected);
+
+    // Decompress leaves out zeros unless asked for every byte; Compress has
+    // nothing to choose.
+    for (const OperationDescriptor& op : xex.operations()) {
+        if (op.id == "decompress") {
+            const ParameterDescriptor* storage = findParameter(op, "storage");
+            CHECK(storage && std::get<std::string>(storage->defaultValue) == "basic" && storage->options.size() == 2);
+            CHECK(findParameter(op, "output")->suggestedName == "{stem}.decompressed.xex");
+        } else if (op.id == "compress") {
+            CHECK(op.parameters.size() == 2 && findParameter(op, "target") && findParameter(op, "output"));
+            CHECK(findParameter(op, "output")->suggestedName == "{stem}.compressed.xex");
+        }
+    }
 }
 
 void testProbe(const FormatHandler& xex, Fixture& f) {
@@ -472,13 +485,14 @@ void testGolden(Fixture& f) {
     CHECK(f.runTo("exportInfo", "titled.xex", {}, "got.xml"));
     MATCHES(f.out / "got.xml", "get_info", "got.xml");
 
-    // -c u, -c b, -c c
-    CHECK(f.runTo("compression", "titled.xex", {{"format", std::string{"basic"}}}, "basic.xex"));
+    // -c u (Decompress, the default storage), -c b, -c c (Compress)
+    CHECK(f.runTo("decompress", "titled.xex", {}, "basic.xex"));
     MATCHES(f.out / "basic.xex", "to_basic", "basic.xex");
     f.keep("basic.xex");
-    CHECK(f.runTo("compression", "titled.xex", {{"format", std::string{"uncompressed"}}}, "none.xex"));
+    CHECK(f.runTo("decompress", "titled.xex", {{"storage", std::string{"uncompressed"}}}, "none.xex"));
     MATCHES(f.out / "none.xex", "to_none", "none.xex");
-    CHECK(f.runTo("compression", "basic.xex", {{"format", std::string{"normal"}}}, "normal.xex"));
+    f.keep("none.xex");
+    CHECK(f.runTo("compress", "basic.xex", {}, "normal.xex"));
     MATCHES(f.out / "normal.xex", "to_normal", "normal.xex");
 
     // -e e, -e u
@@ -507,9 +521,9 @@ void testGolden(Fixture& f) {
     checkReport(f, "retail.xex", "list_retail", true);
 
     // -c b on a devkit file; -c u -e u in two steps
-    CHECK(f.runTo("compression", "dev.xex", {{"format", std::string{"uncompressed"}}}, "dev_none.xex"));
+    CHECK(f.runTo("decompress", "dev.xex", {{"storage", std::string{"uncompressed"}}}, "dev_none.xex"));
     MATCHES(f.out / "dev_none.xex", "devkit_none", "dev_none.xex");
-    CHECK(f.runTo("compression", "dev.xex", {{"format", std::string{"basic"}}}, "dev_basic.xex"));
+    CHECK(f.runTo("decompress", "dev.xex", {{"storage", std::string{"basic"}}}, "dev_basic.xex"));
     f.keep("dev_basic.xex");
     CHECK(f.runTo("decrypt", "dev_basic.xex", {}, "dev_plain.xex"));
     MATCHES(f.out / "dev_plain.xex", "devkit_plain", "dev_plain.xex");
@@ -553,10 +567,52 @@ void testGolden(Fixture& f) {
     // In place: XexTool -c u -e e inplace.xex rewrites the file it read.
     fs::copy_file(f.src / "titled.xex", f.src / "inplace.xex");
     const auto outputs = std::distance(fs::directory_iterator(f.out), fs::directory_iterator());
-    CHECK(f.run("compression", "inplace.xex", {{"format", std::string{"basic"}}, {"target", std::string{"source"}}}));
+    CHECK(f.run("decompress", "inplace.xex", {{"storage", std::string{"basic"}}, {"target", std::string{"source"}}}));
     CHECK(f.run("encrypt", "inplace.xex", {{"target", std::string{"source"}}}));
     MATCHES(f.src / "inplace.xex", "in_place", "inplace.xex");
     CHECK(std::distance(fs::directory_iterator(f.out), fs::directory_iterator()) == outputs);
+}
+
+// Compress and Decompress refuse a run that would not change how the file is
+// stored, and then write nothing, not even in place.
+void testStorage(Fixture& f) {
+    const std::string compressed =
+        "is already LZX compressed, so nothing was written. Decompress stores it without compression.";
+    auto r = f.run("compress", "titled.xex", {{"output", f.host("again.xex")}});
+    CHECK(!r && r.status().message == "titled.xex " + compressed);
+    CHECK(!fs::exists(f.out / "again.xex"));
+    fs::copy_file(f.src / "titled.xex", f.src / "lzx_in_place.xex");
+    r = f.run("compress", "lzx_in_place.xex", {{"target", std::string{"source"}}});
+    CHECK(!r && r.status().message == "lzx_in_place.xex " + compressed);
+    MATCHES(f.src / "lzx_in_place.xex", "set_info", "titled.xex");
+
+    r = f.run("decompress", "basic.xex", {{"output", f.host("same.xex")}});
+    CHECK(!r && r.status().message ==
+                    "basic.xex is already stored that way (Basic, zeros left out), so nothing was written.");
+    r = f.run("decompress", "none.xex", {{"storage", std::string{"uncompressed"}}, {"output", f.host("same.xex")}});
+    CHECK(!r && r.status().message ==
+                    "none.xex is already stored that way (Uncompressed, every byte stored), so nothing was written.");
+    CHECK(!fs::exists(f.out / "same.xex"));
+    fs::copy_file(f.src / "basic.xex", f.src / "basic_in_place.xex");
+    r = f.run("decompress", "basic_in_place.xex", {{"target", std::string{"source"}}});
+    CHECK(!r && r.status().message.find("already stored that way") != std::string::npos);
+    MATCHES(f.src / "basic_in_place.xex", "to_basic", "basic.xex");
+
+    // Between the two uncompressed storages the file does change, to what
+    // the LZX file gives.
+    CHECK(f.runTo("decompress", "basic.xex", {{"storage", std::string{"uncompressed"}}}, "basic_to_none.xex"));
+    MATCHES(f.out / "basic_to_none.xex", "to_none", "none.xex");
+    CHECK(f.runTo("decompress", "none.xex", {}, "none_to_basic.xex"));
+    MATCHES(f.out / "none_to_basic.xex", "to_basic", "basic.xex");
+    CHECK(f.runTo("compress", "none.xex", {}, "none_to_normal.xex"));
+    MATCHES(f.out / "none_to_normal.xex", "to_normal", "normal.xex");
+
+    // The report says how the file is stored now and how its size changed.
+    r = f.run("decompress", "titled.xex", {{"output", f.host("report.xex")}});
+    CHECK(r && r.value().find(": retail, not encrypted, Basic (zeros left out).\nSize: ") != std::string::npos &&
+          r.value().find(" KiB, was ") != std::string::npos);
+    r = f.run("compress", "basic.xex", {{"output", f.host("report2.xex")}});
+    CHECK(r && r.value().find(": retail, not encrypted, Normal (LZX compressed).\nSize: ") != std::string::npos);
 }
 
 void testParameters(Fixture& f) {
@@ -564,8 +620,11 @@ void testParameters(Fixture& f) {
         const auto r = f.run(op, "titled.xex", std::move(p));
         return !r && !r.status().cancelled;
     };
-    CHECK(refused("compression", {{"format", std::string{"zip"}}, {"output", f.host("x.xex")}}));
-    CHECK(refused("compression", {{"format", std::string{"basic"}}})); // no output file
+    CHECK(refused("decompress", {{"storage", std::string{"zip"}}, {"output", f.host("x.xex")}}));
+    CHECK(refused("decompress", {{"storage", std::string{"normal"}}, {"output", f.host("x.xex")}})); // Compress's job
+    CHECK(refused("decompress", {{"storage", std::string{"basic"}}})); // no output file
+    CHECK(refused("compress", {{"storage", std::string{"basic"}}, {"output", f.host("x.xex")}})); // no such choice
+    CHECK(refused("compression", {{"output", f.host("x.xex")}})); // the old combined tool is gone
     CHECK(refused("machine", {{"machine", std::string{"freeboot"}}, {"output", f.host("x.xex")}}));
     CHECK(refused("decrypt", {{"target", std::string{"elsewhere"}}}));
     CHECK(refused("patch", {{"output", f.host("x.xex")}})); // no patch file
@@ -701,7 +760,7 @@ void testRefusals(Fixture& f) {
         ids.push_back(op.id);
     CHECK((ids == std::vector<std::string>{"info", "exportInfo"}));
     CHECK(f.runTo("exportInfo", "patch.xexp", {}, "patch.info.xml"));
-    for (const char* op : {"basefile", "decrypt", "compression", "machine", "limits"})
+    for (const char* op : {"basefile", "decrypt", "decompress", "compress", "machine", "limits"})
         CHECK(!f.run(op, "patch.xexp", {{"target", std::string{"source"}}}));
     CHECK(readFile(f.src / "patch.xexp") == readFile(f.root / "patch.xexp.orig"));
 
@@ -754,7 +813,7 @@ void testRefusals(Fixture& f) {
     CHECK(view && property(view.value(), "Executable", "Image size") == "0x1FFFF000 (512.0 MiB)");
     CHECK(view && property(view.value(), "Executable", "Note").find("An image larger than 64 MiB") == 0);
     const std::vector<std::pair<std::string, Parameters>> runs = {
-        {"info", {}}, {"compression", {{"output", f.host("h.xex")}}}, {"resources", {{"folder", f.host("h")}}}};
+        {"info", {}}, {"decompress", {{"output", f.host("h.xex")}}}, {"resources", {{"folder", f.host("h")}}}};
     for (const auto& [op, parameters] : runs) {
         const auto r = f.run(op, "huge_image.xex", parameters);
         CHECK(!r && r.status().message.find("cannot be right") != std::string::npos);
@@ -795,6 +854,7 @@ int main(int argc, char* argv[]) {
         if (fs::exists(f.src / "dev.xex")) {
             testDescribe(*f.xex, f);
             testProbe(*f.xex, f);
+            testStorage(f);
             testParameters(f);
             testCancel(f);
             testPlaces(f);
