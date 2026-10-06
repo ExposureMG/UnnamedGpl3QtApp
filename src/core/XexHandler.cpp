@@ -121,6 +121,15 @@ std::string tooLarge(std::uint64_t size) {
            byteCount(XexHandler::kMaxSize) + ")";
 }
 
+// Bytes for XexTool, named for its messages: XexTool names an input by its
+// path, and reads the path only when it gets no bytes. Without a name its
+// errors say "xex" and "patch".
+xt::Input memoryInput(const xt::Bytes& data, const std::string& location) {
+    xt::Input input = xt::Input::memory(data);
+    input.path = location.substr(location.find_last_of("/\\") + 1);
+    return input;
+}
+
 // The whole source, which XexTool needs in memory.
 Result<xt::Bytes> readSource(OperationContext& ctx) {
     if (ctx.sourceSize() > XexHandler::kMaxSize)
@@ -170,7 +179,7 @@ Result<std::string> runEdit(OperationContext& ctx, const EditCall& call, const s
         return Status::cancelledByUser();
     xt::Bytes out;
     xt::EditResult result;
-    const xt::Status st = call(xt::Input::memory(data.value()), xt::Output::memory(out), &result);
+    const xt::Status st = call(memoryInput(data.value(), ctx.sourceName()), xt::Output::memory(out), &result);
     if (!st)
         return apiFailure(st);
     if (!keepGoing(ctx, "writing"))
@@ -276,6 +285,7 @@ OperationDescriptor resourcesOperation() {
                                 "Existing files are not replaced. If the run stops part way, the resources written "
                                 "so far stay.");
     folder.required = true;
+    folder.suggestedName = "{stem}_resources";
     op.parameters = {folder};
     return op;
 }
@@ -365,17 +375,30 @@ const LimitFlag kLimits[] = {
     {"mediaId", "Media id (set to zero)", &xt::RemoveLimits::mediaId},
 };
 
+// The limits that complete, validated values ask to remove.
+xt::RemoveLimits chosenLimits(const Parameters& values) {
+    if (std::get<bool>(values.at("all")))
+        return xt::RemoveLimits::all();
+    xt::RemoveLimits limits;
+    for (const LimitFlag& limit : kLimits)
+        limits.*limit.member = std::get<bool>(values.at(limit.id));
+    return limits;
+}
+
 OperationDescriptor limitsOperation() {
     auto op = makeOperation("limits", "Remove Limits",
                             "Removes restrictions on where and how the executable runs (XexTool -r).");
     op.parameters.push_back(makeParameter("all", ParameterKind::Boolean, "All limits", true,
-                                          "Every limit below, as XexTool -r a."));
+                                          "Removes every limit XexTool knows (-r a). Turn it off to choose."));
     for (const LimitFlag& limit : kLimits) {
         auto p = makeParameter(limit.id, ParameterKind::Boolean, limit.label, false);
         p.visibleWhen = {"all", {false}};
         op.parameters.push_back(std::move(p));
     }
     addDestination(op, "{stem}.unlocked.xex");
+    op.checkValues = [](const Parameters& values) {
+        return chosenLimits(values).any() ? Status::success() : Status::failure("Choose at least one limit to remove");
+    };
     return op;
 }
 
@@ -428,7 +451,7 @@ Result<std::string> runInfo(OperationContext& ctx) {
         return Status::cancelledByUser();
     xt::XexInfo info;
     xt::ReadInfoParams params;
-    params.xex = xt::Input::memory(data.value());
+    params.xex = memoryInput(data.value(), ctx.sourceName());
     if (const xt::Status st = xt::readInfo(params, info); !st)
         return apiFailure(st);
     std::string text = ctx.text("detail") == "summary" ? info.summary : info.report;
@@ -452,7 +475,7 @@ Result<std::string> runExtract(OperationContext& ctx, const ExtractCall& call) {
     if (!keepGoing(ctx, "extracting"))
         return Status::cancelledByUser();
     xt::Bytes out;
-    if (const xt::Status st = call(xt::Input::memory(data.value()), out); !st)
+    if (const xt::Status st = call(memoryInput(data.value(), ctx.sourceName()), out); !st)
         return apiFailure(st);
     if (!keepGoing(ctx, "writing"))
         return Status::cancelledByUser();
@@ -524,7 +547,7 @@ Result<std::string> runResources(OperationContext& ctx) {
     if (!keepGoing(ctx, "extracting"))
         return Status::cancelledByUser();
     xt::ExtractResourcesParams params;
-    params.xex = xt::Input::memory(data.value());
+    params.xex = memoryInput(data.value(), ctx.sourceName());
     std::vector<xt::ExtractedResource> resources;
     if (const xt::Status st = xt::extractResources(params, &resources); !st)
         return apiFailure(st);
@@ -591,20 +614,14 @@ Result<std::string> runPatch(OperationContext& ctx) {
     return runEdit(ctx, [&](const xt::Input& xex, const xt::Output& out, xt::EditResult* result) {
         xt::PatchParams params;
         params.xex = xex;
-        params.patch = xt::Input::memory(patch.value());
+        params.patch = memoryInput(patch.value(), ctx.text("patch"));
         params.output = out;
         return xt::applyPatch(params, result);
     });
 }
 
 Result<std::string> runLimits(OperationContext& ctx) {
-    xt::RemoveLimits limits;
-    if (ctx.flag("all")) {
-        limits = xt::RemoveLimits::all();
-    } else {
-        for (const LimitFlag& limit : kLimits)
-            limits.*limit.member = ctx.flag(limit.id);
-    }
+    const xt::RemoveLimits limits = chosenLimits(ctx.parameters());
     if (!limits.any())
         return Status::failure("Choose at least one limit to remove");
     return runEdit(ctx, [&](const xt::Input& xex, const xt::Output& out, xt::EditResult* result) {
@@ -794,7 +811,8 @@ std::vector<PropertyGroup> describeInfo(const xt::XexInfo& info) {
         for (const xt::ImportLibrary& lib : info.importLibraries) {
             libraries.items.push_back({lib.name + " (imports)", versionText(lib.version) + ", at least " +
                                                                     versionText(lib.minVersion) + ", " +
-                                                                    std::to_string(lib.records.size()) + " records"});
+                                                                    std::to_string(lib.records.size()) +
+                                                                    (lib.records.size() == 1 ? " record" : " records")});
         }
         out.push_back(std::move(libraries));
     }
@@ -846,7 +864,7 @@ Status XexHandler::describe(ByteSource& source, const FileProbe& file, std::vect
         return data.status();
     xt::XexInfo info;
     xt::ReadInfoParams params;
-    params.xex = xt::Input::memory(data.value());
+    params.xex = memoryInput(data.value(), file.name);
     if (const xt::Status st = xt::readInfo(params, info); !st) {
         out.push_back({"Executable", {{"Format", "XEX2"}, {"Error", st.error}}});
         return Status::success();

@@ -373,7 +373,7 @@ void testProbe(const FormatHandler& xex, Fixture& f) {
         auto groups = describeFile(xex, *f.place, std::string("/") + name);
         CHECK(groups && property(groups.value(), "Executable", "Error") != "(none)");
         const auto info = f.run("info", name, {});
-        CHECK(!info && !info.status().cancelled && !info.status().message.empty());
+        CHECK(!info && !info.status().cancelled && info.status().message.find(name) != std::string::npos);
         CHECK(!f.run("decrypt", name, {{"output", f.host(std::string(name) + ".out")}}));
         CHECK(!fs::exists(f.out / (std::string(name) + ".out")));
     }
@@ -521,9 +521,10 @@ void testGolden(Fixture& f) {
     f.keep("patched.xex");
     checkReport(f, "patched.xex", "list_patched", true);
     auto wrong = f.run("patch", "titled.xex", {{"patch", patch}, {"output", f.host("wrong.xex")}});
-    CHECK(!wrong && wrong.status().message.find("is not the correct patch file") != std::string::npos);
+    // XexTool's messages, naming the files rather than "patch" and "xex"
+    CHECK(!wrong && wrong.status().message == "patch.xexp is not the correct patch file for titled.xex");
     wrong = f.run("patch", "titled.xex", {{"patch", pathToUtf8(f.src / "dev.xex")}, {"output", f.host("wrong.xex")}});
-    CHECK(!wrong && wrong.status().message.find("is not a patch file") != std::string::npos);
+    CHECK(!wrong && wrong.status().message == "dev.xex is not a patch file!");
     CHECK(!f.run("patch", "patch.xexp", {{"patch", patch}, {"output", f.host("wrong.xex")}})); // does not apply
     CHECK(!fs::exists(f.out / "wrong.xex"));
 
@@ -578,6 +579,15 @@ void testParameters(Fixture& f) {
     const auto none = f.run("limits", "titled.xex", {{"all", false}, {"output", f.host("x.xex")}});
     CHECK(!none && none.status().message == "Choose at least one limit to remove");
     CHECK(!fs::exists(f.out / "x.xex"));
+    for (const OperationDescriptor& op : XexHandler().operations()) { // the dialog sees it before running
+        if (op.id != "limits")
+            continue;
+        Parameters values = {{"all", false}, {"output", f.host("x.xex")}};
+        const Status st = validateParameters(op, values);
+        CHECK(!st && st.message == "Choose at least one limit to remove");
+        values = {{"all", false}, {"dates", true}, {"output", f.host("x.xex")}};
+        CHECK(validateParameters(op, values));
+    }
 
     // An output file the user chose is replaced (the save dialog asked); a
     // resource file in a folder is not.
