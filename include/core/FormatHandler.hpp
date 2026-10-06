@@ -56,12 +56,25 @@ public:
     // New contents for the source file (OperationDescriptor::modifiesSource).
     // Read all of the source before finishing this sink.
     virtual Result<std::unique_ptr<ByteSink>> replaceSource(std::optional<std::uint64_t> size) = 0;
+    // Whether an OutputFile `location` is the source file itself, which an
+    // output never replaces (rewriting the source is replaceSource()'s job).
+    virtual bool isSource(const std::string& location) const = 0;
 };
 
+// A name for a new file inside an OutputFolder, which may come from the file
+// being processed: no folder parts and nothing a system reads specially
+// (Windows device names such as CON or NUL.txt, a trailing dot or space,
+// control characters, <>:"|?*).
+Status checkPlainName(const std::string& name);
+
+// Refuses active OutputFile values that name the source (OperationIo::isSource).
+Status checkOutputs(const OperationDescriptor& operation, const Parameters& values, const OperationIo& io);
+
 // Host paths for inputs and outputs (UTF-8). An OutputFile replaces an
-// existing file (the save dialog asked); a file in an OutputFolder does not,
-// and its name must be a plain name. A missing OutputFolder is created. The source is replaced through its
-// FileSystem (`sourceFs` may be null when nothing may be replaced).
+// existing file other than the source (the UI asks first); a file in an
+// OutputFolder does not, and its name must be a plain name. A missing
+// OutputFolder is created. The source is replaced through its FileSystem
+// (`sourceFs` may be null when nothing may be replaced).
 class HostOperationIo final : public OperationIo {
 public:
     HostOperationIo(FileSystem* sourceFs, std::string sourcePath)
@@ -71,6 +84,7 @@ public:
     Result<std::unique_ptr<ByteSink>> createOutput(const std::string& location, const std::string& name,
                                                    std::optional<std::uint64_t> size) override;
     Result<std::unique_ptr<ByteSink>> replaceSource(std::optional<std::uint64_t> size) override;
+    bool isSource(const std::string& location) const override;
 
 private:
     FileSystem* m_sourceFs;
@@ -79,8 +93,9 @@ private:
 
 // Paths inside a FileSystem for inputs and outputs (a FATX place, another
 // host folder, ...), with the same rules as HostOperationIo: an OutputFile
-// replaces an existing file, a file in an OutputFolder does not and must have
-// a plain name, and a missing OutputFolder is created (its parent must exist). Both filesystems must outlive the object.
+// replaces an existing file other than the source, a file in an OutputFolder
+// does not and must have a plain name, and a missing OutputFolder is created
+// (its parent must exist). Both filesystems must outlive the object.
 class FileSystemOperationIo final : public OperationIo {
 public:
     FileSystemOperationIo(FileSystem& target, FileSystem* sourceFs, std::string sourcePath)
@@ -90,6 +105,7 @@ public:
     Result<std::unique_ptr<ByteSink>> createOutput(const std::string& location, const std::string& name,
                                                    std::optional<std::uint64_t> size) override;
     Result<std::unique_ptr<ByteSink>> replaceSource(std::optional<std::uint64_t> size) override;
+    bool isSource(const std::string& location) const override;
 
 private:
     FileSystem& m_target;
@@ -163,8 +179,9 @@ public:
 std::vector<OperationDescriptor> applicableOperations(const FormatHandler& handler, const FileProbe& file);
 
 // Probes the file at `path`, checks that the operation applies to it,
-// validates `parameters` and runs the operation with the file as its source.
-// Operations that modify the source need Capability::Replace on `fs`.
+// validates `parameters` (checkOutputs() included) and runs the operation
+// with the file as its source. Operations that modify the source need
+// Capability::Replace on `fs`.
 Result<std::string> runOperation(const FormatHandler& handler, const std::string& operationId, const FileSystem& fs,
                                  const std::string& path, Parameters parameters, OperationIo& io,
                                  const ProgressFn& progress = {});

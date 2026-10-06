@@ -49,17 +49,59 @@ Result<FileProbe> probeFile(const FileSystem& fs, const std::string& path) {
     return probe;
 }
 
+// --- names ---------------------------------------------------------------------
+
+Status checkPlainName(const std::string& name) {
+    const auto invalid = [&] { return Status::failure("“" + name + "” is not a valid file name"); };
+    if (name.empty() || name == "." || name == ".." || name.back() == '.' || name.back() == ' ')
+        return invalid();
+    for (const char c : name) {
+        const auto u = static_cast<unsigned char>(c);
+        if (u < 0x20 || u == 0x7F || std::strchr("<>:\"/\\|?*", c))
+            return invalid();
+    }
+    // Windows opens a device for these, whatever the extension.
+    std::string base = name.substr(0, name.find('.'));
+    while (!base.empty() && base.back() == ' ')
+        base.pop_back();
+    for (char& c : base)
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    static const char* const devices[] = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"};
+    for (const char* device : devices) {
+        if (base == device)
+            return invalid();
+    }
+    if (base.size() == 4 && (base.starts_with("COM") || base.starts_with("LPT")) && base[3] >= '1' && base[3] <= '9')
+        return invalid();
+    return Status::success();
+}
+
+Status checkOutputs(const OperationDescriptor& operation, const Parameters& values, const OperationIo& io) {
+    for (const ParameterDescriptor& p : operation.parameters) {
+        if (p.kind != ParameterKind::OutputFile || !isParameterActive(operation, values, p.id))
+            continue;
+        const auto it = values.find(p.id);
+        if (it == values.end() || !std::holds_alternative<std::string>(it->second) ||
+            !io.isSource(std::get<std::string>(it->second)))
+            continue;
+        std::string message = (p.label.empty() ? p.id : p.label) + " is the file being processed: choose another file";
+        // Name the choice that rewrites the source, where there is one.
+        const Condition& when = operation.modifiesSourceWhen;
+        const ParameterDescriptor* choice = operation.modifiesSource ? findParameter(operation, when.parameter) : nullptr;
+        if (choice && choice->kind == ParameterKind::Choice && !when.values.empty()) {
+            for (const ChoiceOption& o : choice->options) {
+                if (o.id == std::get<std::string>(when.values.front()))
+                    message += ", or “" + o.label + "” to change it";
+            }
+        }
+        return Status::failure(message);
+    }
+    return Status::success();
+}
+
 // --- host I/O ------------------------------------------------------------------
 
 namespace {
-
-// Names come from the file being processed, which may be hostile.
-Status checkPlainName(const std::string& name) {
-    if (name == "." || name == ".." || name.find_first_of("/\\:") != std::string::npos ||
-        name.find('\0') != std::string::npos)
-        return Status::failure("“" + name + "” is not a valid file name");
-    return Status::success();
-}
 
 Result<std::unique_ptr<ByteSink>> replaceThrough(FileSystem* fs, const std::string& path,
                                                  std::optional<std::uint64_t> size) {
@@ -67,6 +109,37 @@ Result<std::unique_ptr<ByteSink>> replaceThrough(FileSystem* fs, const std::stri
         return Status::failure("The file cannot be changed here");
     return fs->openWrite(path, size, true);
 }
+
+// The same host file, through links too; a missing one is no file's.
+bool sameHostFile(const std::filesystem::path& a, const std::filesystem::path& b) {
+    std::error_code ec;
+    return std::filesystem::equivalent(a, b, ec) && !ec;
+}
+
+// "/A//b/./c/" -> "a/b/c": virtual paths compared without case, as FATX does.
+std::string comparablePath(const std::string& path) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (start <= path.size()) {
+        const std::size_t end = std::min(path.find('/', start), path.size());
+        std::string part = path.substr(start, end - start);
+        if (part == "..") {
+            if (!parts.empty())
+                parts.pop_back();
+        } else if (!part.empty() && part != ".") {
+            for (char& c : part)
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            parts.push_back(std::move(part));
+        }
+        start = end + 1;
+    }
+    std::string out;
+    for (const std::string& part : parts)
+        out += "/" + part;
+    return out;
+}
+
+const char* const kOutputIsSource = "The output is the file being processed";
 
 } // namespace
 
@@ -80,8 +153,11 @@ Result<std::unique_ptr<ByteSink>> HostOperationIo::createOutput(const std::strin
                                                                 std::optional<std::uint64_t>) {
     if (location.empty())
         return Status::failure("No output chosen");
-    if (name.empty())
+    if (name.empty()) {
+        if (isSource(location))
+            return Status::failure(kOutputIsSource);
         return openFileSink(pathFromUtf8(location), true);
+    }
     if (const Status st = checkPlainName(name); !st)
         return st;
     const std::filesystem::path folder = pathFromUtf8(location);
@@ -93,6 +169,11 @@ Result<std::unique_ptr<ByteSink>> HostOperationIo::createOutput(const std::strin
 
 Result<std::unique_ptr<ByteSink>> HostOperationIo::replaceSource(std::optional<std::uint64_t> size) {
     return replaceThrough(m_sourceFs, m_sourcePath, size);
+}
+
+bool HostOperationIo::isSource(const std::string& location) const {
+    const auto source = m_sourceFs ? m_sourceFs->hostPath(m_sourcePath) : std::nullopt;
+    return source && !location.empty() && sameHostFile(pathFromUtf8(location), *source);
 }
 
 // --- I/O inside a filesystem -----------------------------------------------------
@@ -108,8 +189,11 @@ Result<std::unique_ptr<ByteSink>> FileSystemOperationIo::createOutput(const std:
                                                                       std::optional<std::uint64_t> size) {
     if (location.empty())
         return Status::failure("No output chosen");
-    if (name.empty())
+    if (name.empty()) {
+        if (isSource(location))
+            return Status::failure(kOutputIsSource);
         return m_target.openWrite(location, size, true);
+    }
     if (const Status st = checkPlainName(name); !st)
         return st;
     if (Entry entry; !m_target.stat(location, entry)) {
@@ -121,6 +205,16 @@ Result<std::unique_ptr<ByteSink>> FileSystemOperationIo::createOutput(const std:
 
 Result<std::unique_ptr<ByteSink>> FileSystemOperationIo::replaceSource(std::optional<std::uint64_t> size) {
     return replaceThrough(m_sourceFs, m_sourcePath, size);
+}
+
+bool FileSystemOperationIo::isSource(const std::string& location) const {
+    if (!m_sourceFs || location.empty())
+        return false;
+    const auto target = m_target.hostPath(location);
+    const auto source = m_sourceFs->hostPath(m_sourcePath);
+    if (target && source)
+        return sameHostFile(*target, *source);
+    return &m_target == m_sourceFs && comparablePath(location) == comparablePath(m_sourcePath);
 }
 
 // --- running -------------------------------------------------------------------
@@ -217,6 +311,8 @@ Result<std::string> runOperation(const FormatHandler& handler, const std::string
     if (op == ops.end())
         return Status::failure(handler.name() + ": “" + operationId + "” does not apply to " + probe->name);
     if (const Status st = validateParameters(*op, parameters); !st)
+        return st;
+    if (const Status st = checkOutputs(*op, parameters, io); !st)
         return st;
     if (rewritesSource(*op, parameters) && !hasCapability(fs.capabilities(), Capability::Replace))
         return Status::failure(op->name + " changes the file, which " + fs.name() + " does not allow");

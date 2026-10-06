@@ -352,6 +352,15 @@ void testFileSinks(const fs::path& root) {
     fs::permissions(dir / "locked.bin", fs::perms::owner_read | fs::perms::owner_write);
 #endif
     CHECK(stagingFiles(dir) == 0);
+
+    // Names inside an output folder.
+    for (const char* name : {"4E4D07D0", "game.xex", "a b", ".hidden", "AUXILIARY", "COM0", "com10.txt"})
+        CHECK(checkPlainName(name));
+    for (const char* name : {"", ".", "..", "a/b", "a\\b", "C:x", "CON", "nul.txt", "Aux", "com1", "LPT9.log",
+                             "CON .txt", "conin$", "x.", "x ", "\x01\x02\x7f", "tab\tname", "a?", "a*", "<a>", "a|b",
+                             "\"q\""})
+        CHECK(!checkPlainName(name));
+    CHECK(!checkPlainName(std::string("nul\0x", 5)));
 }
 
 void testChecksums() {
@@ -533,6 +542,26 @@ void testFormatHandlers(const fs::path& root) {
     CHECK(runOperation(*test, "shout", local, "/ask.tst", {{"to", std::string{"inplace"}}}, askIo));
     CHECK(readFile(dir / "src" / "ask.tst") == "TST1 ASK");
 
+    // An output file is never the source, whatever it is called; rewriting
+    // the source is the in-place choice's job.
+    std::ofstream(dir / "src" / "self.tst", std::ios::binary) << "TST1 self";
+    HostOperationIo selfIo(&local, "/self.tst");
+    for (const std::string& name : {pathToUtf8(dir / "src" / "self.tst"), pathToUtf8(dir / "src" / "." / "self.tst"),
+                                    pathToUtf8(dir / "out" / ".." / "src" / "self.tst")}) {
+        const auto self = runOperation(*test, "shout", local, "/self.tst", {{"output", name}}, selfIo);
+        CHECK(!self && self.status().message ==
+                           "output is the file being processed: choose another file, or “In place” to change it");
+    }
+    std::error_code linkError;
+    fs::create_symlink(dir / "src" / "self.tst", dir / "out" / "self-link.tst", linkError);
+    if (!linkError)
+        CHECK(!runOperation(*test, "shout", local, "/self.tst", {{"output", pathToUtf8(dir / "out" / "self-link.tst")}},
+                            selfIo));
+    CHECK(readFile(dir / "src" / "self.tst") == "TST1 self");
+    CHECK(!selfIo.createOutput(pathToUtf8(dir / "src" / "self.tst"), {}, std::nullopt)); // also when asked directly
+    CHECK(!selfIo.isSource(pathToUtf8(dir / "src" / "ask.tst")) && !selfIo.isSource({}));
+    CHECK(!HostOperationIo(&view, "/self.tst").isSource(pathToUtf8(dir / "src" / "self.tst"))); // no host path
+
     // Inputs and outputs inside another filesystem.
     fs::create_directories(dir / "other" / "sub");
     std::ofstream(dir / "other" / "more.bin", std::ios::binary) << "+more";
@@ -563,6 +592,11 @@ void testFormatHandlers(const fs::path& root) {
     CHECK(!fs::exists(dir / "other" / "item.tst"));
     FileSystemOperationIo noReplace(other, &view, "/item.tst");
     CHECK(!noReplace.replaceSource(1));
+    FileSystemOperationIo sameIo(local, &local, "/plain.tst");
+    CHECK(!runOperation(*test, "shout", local, "/plain.tst", {{"output", std::string{"/folder/../plain.tst"}}}, sameIo));
+    CHECK(readFile(dir / "src" / "plain.tst") == "no magic");
+    FileSystemOperationIo viewSelf(view, &view, "/ask.tst"); // no host paths: compared as FATX names are
+    CHECK(viewSelf.isSource("/./ASK.tst") && viewSelf.isSource("ask.tst") && !viewSelf.isSource("/ask.tst.bak"));
     CHECK(!otherIo.openInput({}) && !otherIo.createOutput({}, {}, std::nullopt));
 }
 

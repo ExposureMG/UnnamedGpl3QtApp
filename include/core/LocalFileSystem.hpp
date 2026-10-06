@@ -12,6 +12,7 @@ public:
 
     std::string name() const override { return "Local"; }
     Capability capabilities() const override;
+    std::optional<std::filesystem::path> hostPath(const std::string& path) const override;
 
     Status list(const std::string& path, std::vector<Entry>& out) const override;
     Status describe(const std::string& path, Details& out) const override;

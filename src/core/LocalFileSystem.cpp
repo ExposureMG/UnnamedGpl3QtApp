@@ -46,6 +46,13 @@ Capability LocalFileSystem::capabilities() const {
            Capability::MakeDirectory | Capability::Rename;
 }
 
+std::optional<fs::path> LocalFileSystem::hostPath(const std::string& path) const {
+    fs::path out;
+    if (!resolve(path, out))
+        return std::nullopt;
+    return out;
+}
+
 bool LocalFileSystem::resolve(const std::string& path, fs::path& out) const {
     const fs::path relative = pathFromUtf8(path).relative_path().lexically_normal();
     for (const auto& part : relative) {

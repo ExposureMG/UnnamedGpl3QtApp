@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -74,9 +75,10 @@ constexpr bool hasCapability(Capability set, Capability flag) {
 // advertised via capabilities() when overridden, so the GUI can enable/disable
 // actions.
 //
-// Threading: name() and capabilities() must be thread-safe and constant. All
-// other calls may run on a worker thread, but callers serialise them (one call
-// at a time per filesystem object), so backends need no internal locking.
+// Threading: name(), capabilities() and hostPath() must be thread-safe and
+// constant. All other calls may run on a worker thread, but callers serialise
+// them (one call at a time per filesystem object), so backends need no
+// internal locking.
 //
 // File contents move as streams (see Stream.hpp) and whole trees are copied
 // between any two filesystems by copyTree() (see Transfer.hpp):
@@ -87,6 +89,9 @@ public:
 
     virtual std::string name() const = 0;
     virtual Capability capabilities() const { return Capability::Browse; }
+    // The host file or folder at `path`, for a filesystem that is a host
+    // folder; computed from the path alone, without touching the disk.
+    virtual std::optional<std::filesystem::path> hostPath(const std::string&) const { return std::nullopt; }
 
     virtual Status list(const std::string& path, std::vector<Entry>& out) const = 0;
     // Information about one entry. The default looks it up in list(parent).
