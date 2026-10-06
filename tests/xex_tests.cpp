@@ -598,8 +598,19 @@ void testParameters(Fixture& f) {
     writeFile(f.out / "res2" / "4E4D07D0", "mine");
     CHECK(!f.run("resources", "titled.xex", {{"folder", f.host("res2")}}));
     CHECK(readFile(f.out / "res2" / "4E4D07D0") == "mine");
-    auto none2 = f.run("resources", "patch.xexp", {{"folder", f.host("res2")}});
-    CHECK(none2 && none2.value() == "The file contains no resources.\n");
+    CHECK(!f.run("resources", "patch.xexp", {{"folder", f.host("res2")}})); // does not apply
+
+    // The bounding path is printable ASCII of a length the info document keeps.
+    const auto bound = [&](const std::string& path) {
+        return f.run("boundingPath", "dev.xex", {{"path", path}, {"output", f.host("b.xex")}});
+    };
+    for (const std::string& bad : {std::string(256, 'a'), std::string("\\Dev\0ice", 9), std::string("\\Device\\\xC3\x84"),
+                                   std::string("\\Device\tx")}) {
+        const auto r = bound(bad);
+        CHECK(!r && r.status().message.find("bounding path") != std::string::npos);
+    }
+    CHECK(!fs::exists(f.out / "b.xex"));
+    CHECK(bound("\\" + std::string(254, 'a')));
 }
 
 void testCancel(Fixture& f) {
@@ -681,6 +692,76 @@ void testPlaces(Fixture& f) {
     CHECK(!fs::exists(otherRoot / "dev2.xex"));
 }
 
+// What a damaged or hostile file, or a careless choice, must not get done.
+void testRefusals(Fixture& f) {
+    // A delta patch has headers and no basefile: only Info and Export Info.
+    const auto onPatch = applicableOperations(*f.xex, probeFile(*f.place, "/patch.xexp").value());
+    std::vector<std::string> ids;
+    for (const OperationDescriptor& op : onPatch)
+        ids.push_back(op.id);
+    CHECK((ids == std::vector<std::string>{"info", "exportInfo"}));
+    CHECK(f.runTo("exportInfo", "patch.xexp", {}, "patch.info.xml"));
+    for (const char* op : {"basefile", "decrypt", "compression", "machine", "limits"})
+        CHECK(!f.run(op, "patch.xexp", {{"target", std::string{"source"}}}));
+    CHECK(readFile(f.src / "patch.xexp") == readFile(f.root / "patch.xexp.orig"));
+
+    // An output file is never the source: not for a report, an extraction or
+    // an edit written "to a new file".
+    const std::string titled = pathToUtf8(f.src / "titled.xex");
+    auto self = f.run("info", "titled.xex", {{"save", true}, {"output", titled}});
+    CHECK(!self && self.status().message.find("is the file being processed") != std::string::npos);
+    CHECK(!f.run("basefile", "titled.xex", {{"output", titled}}));
+    self = f.run("encrypt", "titled.xex", {{"output", titled}});
+    CHECK(!self && self.status().message.find("“This file (in place)”") != std::string::npos);
+    CHECK(!f.run("decrypt", "titled.xex", {{"output", pathToUtf8(f.src / "res" / ".." / "titled.xex")}}));
+    MATCHES(f.src / "titled.xex", "set_info", "titled.xex");
+
+    // An empty patch is an empty file, not the name of one to look for in the
+    // working directory (which holds a real patch.xexp here).
+    fs::create_directories(f.out / "empty");
+    writeFile(f.out / "empty" / "patch.xexp", "");
+    const fs::path cwd = fs::current_path();
+    fs::current_path(f.src);
+    const auto empty = f.run("patch", "dev.xex", {{"patch", f.host("empty/patch.xexp")}, {"output", f.host("e.xex")}});
+    fs::current_path(cwd);
+    CHECK(!empty && empty.status().message.find("Error reading patch file patch.xexp") == 0);
+    CHECK(!fs::exists(f.out / "e.xex"));
+
+    // Resource names a system reads specially are refused before any is written.
+    std::string named = readFile(f.src / "titled.xex");
+    const std::size_t at = named.find("4E4D07D0");
+    CHECK(at != std::string::npos && at < 0x1000);
+    for (const char* name : {"CON", "nul.txt", "x.", "x ", "\x01\x02\x7f"}) {
+        std::string copy = named;
+        copy.replace(at, 8, std::string(name) + std::string(8 - std::strlen(name), '\0'));
+        writeFile(f.src / "named.xex", copy);
+        fs::remove_all(f.out / "named");
+        const auto r = f.run("resources", "named.xex", {{"folder", f.host("named")}});
+        CHECK(!r && r.status().message.find("is not a safe file name") != std::string::npos);
+        CHECK(!fs::exists(f.out / "named") || fs::is_empty(f.out / "named"));
+    }
+
+    // A small file that claims a huge image: no XexTool call for the details
+    // or the tools.
+    std::string huge = readFile(f.out / "none.xex");
+    const std::uint32_t security = std::uint32_t(std::uint8_t(huge[0x10])) << 24 |
+                                   std::uint32_t(std::uint8_t(huge[0x11])) << 16 |
+                                   std::uint32_t(std::uint8_t(huge[0x12])) << 8 | std::uint8_t(huge[0x13]);
+    const char claimed[4] = {0x1F, char(0xFF), char(0xF0), 0x00};
+    huge.replace(security + 4, 4, claimed, 4);
+    writeFile(f.src / "huge_image.xex", huge);
+    const auto view = describeFile(*f.xex, *f.place, "/huge_image.xex");
+    CHECK(view && property(view.value(), "Executable", "Image size") == "0x1FFFF000 (512.0 MiB)");
+    CHECK(view && property(view.value(), "Executable", "Note").find("An image larger than 64 MiB") == 0);
+    const std::vector<std::pair<std::string, Parameters>> runs = {
+        {"info", {}}, {"compression", {{"output", f.host("h.xex")}}}, {"resources", {{"folder", f.host("h")}}}};
+    for (const auto& [op, parameters] : runs) {
+        const auto r = f.run(op, "huge_image.xex", parameters);
+        CHECK(!r && r.status().message.find("cannot be right") != std::string::npos);
+    }
+    CHECK(!fs::exists(f.out / "h.xex") && !fs::exists(f.out / "h"));
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -704,6 +785,7 @@ int main(int argc, char* argv[]) {
     for (const char* name : {"sample.xex", "sample.elf", "patch.xexp", "info.xml", "info_partial.xml",
                              "info_bad_hex.xml"})
         fs::copy_file(samples / name, f.src / name);
+    fs::copy_file(samples / "patch.xexp", f.root / "patch.xexp.orig");
     f.place = std::make_unique<LocalFileSystem>(f.src);
     f.xex = FormatHandlerRegistry::withBuiltins().find("xex");
     CHECK(f.xex != nullptr);
@@ -716,6 +798,7 @@ int main(int argc, char* argv[]) {
             testParameters(f);
             testCancel(f);
             testPlaces(f);
+            testRefusals(f);
         }
     }
 

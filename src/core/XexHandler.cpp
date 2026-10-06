@@ -121,20 +121,54 @@ std::string tooLarge(std::uint64_t size) {
            byteCount(XexHandler::kMaxSize) + ")";
 }
 
-// Bytes for XexTool, named for its messages: XexTool names an input by its
-// path, and reads the path only when it gets no bytes. Without a name its
-// errors say "xex" and "patch".
+// Bytes for XexTool, named for its messages (without a name its errors say
+// "xex" and "patch"); the name is never opened.
 xt::Input memoryInput(const xt::Bytes& data, const std::string& location) {
     xt::Input input = xt::Input::memory(data);
     input.path = location.substr(location.find_last_of("/\\") + 1);
     return input;
 }
 
+std::uint32_t be32(const std::uint8_t* p) {
+    return std::uint32_t(p[0]) << 24 | std::uint32_t(p[1]) << 16 | std::uint32_t(p[2]) << 8 | std::uint32_t(p[3]);
+}
+
+constexpr std::uint32_t kPatchModuleFlags = 0x10 | 0x20 | 0x40; // patch module, full patch, delta patch
+
+std::uint32_t moduleFlags(const std::uint8_t* data, std::size_t size) { return size >= 8 ? be32(data + 4) : 0; }
+
+// The image size the security info gives, when the headers hold it. XexTool
+// builds an image that large to read a xex, but not for a patch.
+std::optional<std::uint32_t> claimedImageSize(const xt::Bytes& data) {
+    if (data.size() < 0x18 || moduleFlags(data.data(), data.size()) & kPatchModuleFlags)
+        return std::nullopt;
+    const std::uint32_t security = be32(data.data() + 0x10);
+    if (security > data.size() - 8)
+        return std::nullopt;
+    return be32(data.data() + security + 4);
+}
+
+// A small file that claims a huge image is damaged or hostile, and XexTool
+// would spend minutes and gigabytes on it in one call that cannot be
+// interrupted. Real titles are not near this ratio.
+Status checkImageSize(const xt::Bytes& data, std::uint64_t fileSize) {
+    const auto image = claimedImageSize(data);
+    if (image && *image > XexHandler::kMaxDescribeSize && *image / 256 > fileSize)
+        return Status::failure("The header gives a " + byteCount(*image) + " image for a " + byteCount(fileSize) +
+                               " file, which cannot be right: the file is damaged");
+    return Status::success();
+}
+
 // The whole source, which XexTool needs in memory.
 Result<xt::Bytes> readSource(OperationContext& ctx) {
     if (ctx.sourceSize() > XexHandler::kMaxSize)
         return Status::failure(tooLarge(ctx.sourceSize()));
-    return readAll(ctx.source(), XexHandler::kMaxSize, &ctx);
+    auto data = readAll(ctx.source(), XexHandler::kMaxSize, &ctx);
+    if (data) {
+        if (const Status st = checkImageSize(data.value(), data->size()); !st)
+            return st;
+    }
+    return data;
 }
 
 Result<xt::Bytes> readInput(OperationContext& ctx, const std::string& id) {
@@ -196,12 +230,11 @@ const std::vector<std::string> kTextFilters = {"Text files (*.txt)", "All files 
 
 bool isXex2(const FileProbe& file) { return file.startsWith("XEX2"); }
 
-std::uint32_t moduleFlags(const FileProbe& file) {
-    if (file.head.size() < 8)
-        return 0;
-    const auto* p = file.head.data() + 4;
-    return std::uint32_t(p[0]) << 24 | std::uint32_t(p[1]) << 16 | std::uint32_t(p[2]) << 8 | std::uint32_t(p[3]);
-}
+bool isPatch(const FileProbe& file) { return moduleFlags(file.head.data(), file.head.size()) & kPatchModuleFlags; }
+
+// A delta patch (.xexp) has headers but no basefile of its own: only the
+// tools that read headers apply to it.
+bool isXex2Executable(const FileProbe& file) { return isXex2(file) && !isPatch(file); }
 
 ParameterDescriptor makeParameter(std::string id, ParameterKind kind, std::string label, ParameterValue defaultValue,
                                   std::string help = {}) {
@@ -219,7 +252,7 @@ OperationDescriptor makeOperation(std::string id, std::string name, std::string 
     op.id = std::move(id);
     op.name = std::move(name);
     op.description = std::move(description);
-    op.appliesTo = isXex2;
+    op.appliesTo = isXex2Executable;
     return op;
 }
 
@@ -248,6 +281,7 @@ void addDestination(OperationDescriptor& op, const std::string& suggestedName) {
 OperationDescriptor infoOperation() {
     auto op = makeOperation("info", "Info",
                             "Shows XexTool's information about the executable, and can save it as a text file.");
+    op.appliesTo = isXex2;
     auto detail = makeParameter("detail", ParameterKind::Choice, "Detail", std::string{"full"},
                                 "The full report is what XexTool -l prints; the summary is what XexTool prints for "
                                 "a file given without options.");
@@ -341,10 +375,6 @@ OperationDescriptor patchOperation() {
     auto op = makeOperation("patch", "Apply Patch",
                             "Applies a delta patch (.xexp, as title updates ship) made for this executable "
                             "(XexTool -p).");
-    op.appliesTo = [](const FileProbe& file) {
-        constexpr std::uint32_t kPatchFlags = 0x10 | 0x20 | 0x40; // patch module, full patch, delta patch
-        return isXex2(file) && (moduleFlags(file) & kPatchFlags) == 0;
-    };
     auto patch = makeParameter("patch", ParameterKind::InputFile, "Patch file", std::string{},
                                "XexTool refuses a patch made for another executable.");
     patch.required = true;
@@ -402,14 +432,31 @@ OperationDescriptor limitsOperation() {
     return op;
 }
 
+// XexTool cuts a longer path to 1023 characters and its info document to
+// 259, ends it at a NUL and stores other text as UTF-8; console paths are
+// ASCII. Refused rather than changed.
+constexpr std::size_t kMaxBoundingPath = 255;
+
+Status checkBoundingPath(const std::string& path) {
+    if (path.size() > kMaxBoundingPath)
+        return Status::failure("The bounding path is longer than " + std::to_string(kMaxBoundingPath) + " characters");
+    for (const char c : path) {
+        if (c < 0x20 || c > 0x7E)
+            return Status::failure("The bounding path may only hold printable ASCII characters");
+    }
+    return Status::success();
+}
+
 OperationDescriptor boundingPathOperation() {
     auto op = makeOperation("boundingPath", "Add Bounding Path",
                             "Restricts the executable to run only from one folder (XexTool -a).");
     auto path = makeParameter("path", ParameterKind::Text, "Bounding path", std::string{},
-                              "A console path, such as \\Device\\Cdrom0\\Games.");
+                              "A console path, such as \\Device\\Cdrom0\\Games: printable ASCII, up to " +
+                                  std::to_string(kMaxBoundingPath) + " characters.");
     path.required = true;
     op.parameters = {path};
     addDestination(op, "{stem}.bound.xex");
+    op.checkValues = [](const Parameters& values) { return checkBoundingPath(std::get<std::string>(values.at("path"))); };
     return op;
 }
 
@@ -426,6 +473,7 @@ OperationDescriptor exportInfoOperation() {
                             "Writes the title id, media id, regions, ratings and the other facts Import Info XML "
                             "can set, as an XML document (XexTool -z g).");
     op.parameters = {outputFile("{stem}.info.xml", {"XML documents (*.xml)", "All files (*)"})};
+    op.appliesTo = isXex2;
     return op;
 }
 
@@ -492,7 +540,11 @@ Result<std::string> runBasefile(OperationContext& ctx) {
             xt::ExtractBasefileParams params;
             params.xex = xex;
             params.basefile = xt::Output::memory(out);
-            const xt::Status st = xt::extractBasefile(params);
+            xt::Status st = xt::extractBasefile(params);
+            if (st && out.empty()) {
+                st.ok = false;
+                st.error = "Error dumping basefile: it is empty";
+            }
             if (st) {
                 xt::ReadInfoParams read;
                 read.xex = xex;
@@ -535,11 +587,6 @@ Result<std::string> runExportInfo(OperationContext& ctx) {
         });
 }
 
-bool isPlainName(const std::string& name) {
-    return !name.empty() && name != "." && name != ".." && name.find_first_of("/\\:") == std::string::npos &&
-           name.find('\0') == std::string::npos;
-}
-
 Result<std::string> runResources(OperationContext& ctx) {
     auto data = readSource(ctx);
     if (!data)
@@ -555,7 +602,7 @@ Result<std::string> runResources(OperationContext& ctx) {
         return std::string("The file contains no resources.\n");
     // Names come from the file: check them all before writing any.
     for (const xt::ExtractedResource& r : resources) {
-        if (!isPlainName(r.name))
+        if (!checkPlainName(r.name))
             return Status::failure("Resource name “" + r.name + "” is not a safe file name");
     }
     std::string names;
@@ -862,6 +909,13 @@ Status XexHandler::describe(ByteSource& source, const FileProbe& file, std::vect
     auto data = readAll(source, kMaxDescribeSize);
     if (!data)
         return data.status();
+    if (const auto image = claimedImageSize(data.value()); image && *image > kMaxDescribeSize) {
+        out.push_back({"Executable",
+                       {{"Format", "XEX2"},
+                        {"Image size", sizeText(*image)},
+                        {"Note", "An image larger than " + byteCount(kMaxDescribeSize) + ": use File Tools, Info"}}});
+        return Status::success();
+    }
     xt::XexInfo info;
     xt::ReadInfoParams params;
     params.xex = memoryInput(data.value(), file.name);
