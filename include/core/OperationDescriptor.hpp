@@ -87,9 +87,10 @@ struct OperationDescriptor {
 };
 
 // Checks the descriptor itself: unique non-empty ids, defaults of the right
-// type (an option for Choice, within bounds for Integer), options present for
-// Choice, conditions naming an earlier parameter with values of its type
-// (modifiesSourceWhen: any parameter, and only with modifiesSource).
+// type (an option for Choice, within bounds for Integer), options with unique
+// non-empty ids for Choice, conditions naming an earlier parameter with values
+// it can hold (of its type; options of a Choice) (modifiesSourceWhen: any
+// parameter, and only with modifiesSource).
 Status validateDescriptor(const OperationDescriptor& operation);
 
 // Checks `values` against the descriptor and fills in defaults for missing

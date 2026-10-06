@@ -194,6 +194,10 @@ void testDescriptors() {
     CHECK(broken([](OperationDescriptor& o) { o.parameters[1].visibleWhen.parameter = "nope"; }));
     CHECK(broken([](OperationDescriptor& o) { o.parameters[1].visibleWhen.values = {true}; }));
     CHECK(broken([](OperationDescriptor& o) { o.parameters[1].visibleWhen.values.clear(); }));
+    CHECK(broken([](OperationDescriptor& o) { o.parameters[0].options.push_back({"a", "A again"}); }));
+    CHECK(broken([](OperationDescriptor& o) { o.parameters[0].options.push_back({"", "Nothing"}); }));
+    // A condition no option meets would hide the parameter, and its `required`, for good.
+    CHECK(broken([](OperationDescriptor& o) { o.parameters[1].visibleWhen.values = {std::string{"nope"}}; }));
 
     // Defaults are filled in; hidden parameters are not checked.
     Parameters values;
@@ -255,6 +259,7 @@ void testDescriptors() {
     CHECK(brokenEdit([](OperationDescriptor& o) { o.modifiesSourceWhen.parameter = "nope"; }));
     CHECK(brokenEdit([](OperationDescriptor& o) { o.modifiesSourceWhen.values.clear(); }));
     CHECK(brokenEdit([](OperationDescriptor& o) { o.modifiesSourceWhen.values = {std::string{"3"}}; }));
+    CHECK(brokenEdit([](OperationDescriptor& o) { o.modifiesSourceWhen = {"mode", {std::string{"c"}}}; }));
 
     // A check across parameters runs after the others.
     OperationDescriptor both = op;

@@ -66,6 +66,21 @@ Status checkValue(const ParameterDescriptor& p, const ParameterValue& value) {
     return Status::success();
 }
 
+// A condition's values must be values its parameter can hold: of its type,
+// and options of a Choice (a condition no value meets hides a parameter for
+// good, `required` included).
+Status checkCondition(const Condition& when, const ParameterDescriptor& other, const std::string& where) {
+    if (when.values.empty())
+        return Status::failure(where + " without values");
+    for (const ParameterValue& v : when.values) {
+        if (v.index() != valueIndex(other.kind))
+            return Status::failure(where + ": value must be " + typeName(other.kind));
+        if (other.kind == ParameterKind::Choice && !hasOption(other, std::get<std::string>(v)))
+            return Status::failure(where + ": “" + std::get<std::string>(v) + "” is not an option of " + other.id);
+    }
+    return Status::success();
+}
+
 bool active(const OperationDescriptor& op, const Parameters& values, const ParameterDescriptor& p, int depth) {
     if (p.visibleWhen.parameter.empty())
         return true;
@@ -101,6 +116,11 @@ Status validateDescriptor(const OperationDescriptor& operation) {
             return Status::failure(where + ": default must be " + typeName(p.kind));
         if (p.kind == ParameterKind::Choice && p.options.empty())
             return Status::failure(where + ": a choice needs options");
+        std::set<std::string> optionIds;
+        for (const ChoiceOption& o : p.options) {
+            if (o.id.empty() || !optionIds.insert(o.id).second)
+                return Status::failure(where + ": option ids must be unique and not empty");
+        }
         if (p.kind == ParameterKind::Integer && p.minimum > p.maximum)
             return Status::failure(where + ": minimum is above maximum");
         if (p.kind == ParameterKind::Choice || p.kind == ParameterKind::Integer) {
@@ -111,12 +131,8 @@ Status validateDescriptor(const OperationDescriptor& operation) {
             const ParameterDescriptor* other = findParameter(operation, p.visibleWhen.parameter);
             if (!other || !seen.count(other->id))
                 return Status::failure(where + ": condition must name an earlier parameter");
-            if (p.visibleWhen.values.empty())
-                return Status::failure(where + ": condition without values");
-            for (const ParameterValue& v : p.visibleWhen.values) {
-                if (v.index() != valueIndex(other->kind))
-                    return Status::failure(where + ": condition value must be " + typeName(other->kind));
-            }
+            if (const Status st = checkCondition(p.visibleWhen, *other, where + ": condition"); !st)
+                return st;
         }
         seen.insert(p.id);
     }
@@ -127,12 +143,8 @@ Status validateDescriptor(const OperationDescriptor& operation) {
         const ParameterDescriptor* other = findParameter(operation, when.parameter);
         if (!other)
             return Status::failure(where + " must name a parameter");
-        if (when.values.empty())
-            return Status::failure(where + " without values");
-        for (const ParameterValue& v : when.values) {
-            if (v.index() != valueIndex(other->kind))
-                return Status::failure(where + ": value must be " + typeName(other->kind));
-        }
+        if (const Status st = checkCondition(when, *other, where); !st)
+            return st;
     }
     return Status::success();
 }
