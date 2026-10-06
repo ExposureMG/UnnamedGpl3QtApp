@@ -66,9 +66,17 @@ Kirigami.Dialog {
         values = v;
     }
 
+    // Replacing a file, the source or an existing output, is confirmed first.
     function run() {
         if (!canRun)
             return;
+        if (changesFile || replacedFiles.length > 0)
+            confirmDialog.open();
+        else
+            start();
+    }
+
+    function start() {
         FileBrowser.runFileOperation(fileName, operation.handler, operation.id, values);
         close();
     }
@@ -136,7 +144,7 @@ Kirigami.Dialog {
         Kirigami.InlineMessage {
             objectName: "toolReplaces"
             Layout.fillWidth: true
-            visible: root.replacedFiles.length > 0 && !root.changesFile
+            visible: root.replacedFiles.length > 0 && !root.changesFile && root.canRun
             type: Kirigami.MessageType.Warning
             text: qsTr("“%1” exists and will be replaced.").arg(root.replacedFiles.join("”, “"))
         }
@@ -145,6 +153,15 @@ Kirigami.Dialog {
             visible: root.operation !== null && !root.operation.available
             type: Kirigami.MessageType.Error
             text: root.operation ? root.operation.unavailableReason : ""
+        }
+        // Why the tool cannot run yet, above the fields so a long form does
+        // not hide it.
+        Kirigami.InlineMessage {
+            objectName: "toolProblem"
+            Layout.fillWidth: true
+            visible: root.problem !== "" && root.operation !== null && root.operation.available
+            type: Kirigami.MessageType.Information
+            text: root.problem
         }
 
         Repeater {
@@ -262,14 +279,20 @@ Kirigami.Dialog {
             }
         }
 
-        QQC2.Label {
-            objectName: "toolProblem"
-            Layout.fillWidth: true
-            visible: root.problem !== ""
-            text: root.problem
-            wrapMode: Text.Wrap
-            color: Kirigami.Theme.disabledTextColor
-        }
+    }
+
+    Kirigami.PromptDialog {
+        id: confirmDialog
+        objectName: "toolConfirm"
+        parent: QQC2.Overlay.overlay
+        title: root.operation ? root.operation.name : ""
+        preferredWidth: Kirigami.Units.gridUnit * 24
+        subtitle: root.changesFile
+                  ? qsTr("Replace “%1” with the result? Keep a copy if it matters.").arg(root.fileName)
+                  : qsTr("Replace “%1” with the result?").arg(root.replacedFiles.join("”, “"))
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Ok | Kirigami.Dialog.Cancel
+        onAccepted: root.start()
     }
 
     // --- pickers ---------------------------------------------------------------

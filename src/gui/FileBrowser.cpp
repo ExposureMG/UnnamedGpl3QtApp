@@ -968,6 +968,11 @@ QString FileBrowser::validateOperation(const QString& handler, const QString& op
         return QString::fromStdString(st.message);
     if (core::rewritesSource(*op, parameters) && !has(core::Capability::Replace))
         return tr("This place is read-only: write to a new file instead.");
+    if (const auto rt = runtime(); rt && hasSelection()) {
+        const core::HostOperationIo io(rt->fs.get(), selectedPath().toStdString());
+        if (const core::Status st = core::checkOutputs(*op, parameters, io); !st)
+            return QString::fromStdString(st.message);
+    }
     return QString();
 }
 

@@ -39,7 +39,9 @@ void JobModel::setProgress(int id, double fraction, const QString& message) {
     if (row < 0 || m_jobs[row].state != Running)
         return;
     m_jobs[row].progress = fraction;
-    m_jobs[row].message = message;
+    // A job that was asked to stop keeps saying so until it does.
+    if (!m_jobs[row].cancelFlag || !m_jobs[row].cancelFlag->load())
+        m_jobs[row].message = message;
     emit dataChanged(index(row), index(row), {ProgressRole, MessageRole});
 }
 
