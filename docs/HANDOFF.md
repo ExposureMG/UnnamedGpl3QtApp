@@ -4,16 +4,25 @@
 
 ## Status
 
-Two of six milestones are done: the app browses, extracts, writes and replaces files on FATX images and, on Linux, on drives. Nothing exists yet for XEX, XBDM or STFS, and none of it has been tried on a real console drive.
+Two of six milestones are done: the app browses, extracts, writes and replaces files on FATX images and, on Linux, on drives. The XEX tools (M2) are built and reviewed on Linux. Nothing exists yet for XBDM or STFS, and none of it has been tried on a real console drive or with real titles.
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | M0 | Foundations: streams, generic copy, async jobs, folder and rename operations, feature flags | Done |
 | M1 | FATX: browse, write, in-place replace, format, check and repair, drives on Linux | Done on Linux; not tried on a real drive |
-| M2 | XEX: info, extract, decrypt and encrypt, compress and decompress, patch, sign | Next |
+| M2 | XEX: info, extract, decrypt and encrypt, compress and decompress, patch, sign | Built on Linux; matches the command line; not tried with real titles |
 | M3 | XBDM: file transfer, memory viewer and editor | Not started |
 | M4 | STFS: create, inject, extract, delete | Blocked on relicensing or a clean-room version |
 | M5 | Packaging and CI for Linux, Windows, macOS, Android | Not started |
+
+## M2 status
+
+M2 is built on the app's `m2-xex` branch, on the XexTool fork's `xex-core` branch, and has been reviewed once.
+
+- File Tools run every XexTool operation except special patches, `-x` and `pack`, on a file in any place, and write files that match the command line's golden record byte for byte.
+- A review by two independent agents found 12 problems, among them an output that could be the source itself, user files named `<output>.part` being destroyed, an empty patch reading a same-named file from the working directory, and an old, unhardened fork pinned by the submodule. All are fixed with regression tests, except that quitting still waits for a running XexTool call.
+- One known difference from XexTool before the library split: a patch whose headers drop restriction entries gives a xex without them. It is documented in `XexApi.h` and tested.
+- Not verified: real titles, consoles running the output, and real Windows. Under Wine, in-place edits on a host folder fail because the source is still open; that is not fixed.
 
 ## What is built
 
@@ -108,9 +117,9 @@ The biggest risk is that the FATX write path has never touched a real console dr
 
 ## Next steps
 
-M2, the XEX tools, is next, and it can start as soon as the XexTool fork is writable.
+M2, the XEX tools, is built and reviewed; M3 is next.
 
-1. **M2 XEX.** Add a library target to the XexTool fork (everything except `main.cpp`), then add a format-handler layer so single-file operations declare their parameters and the UI builds the dialog from them. Operations: info, extract, decrypt and encrypt, compress and decompress, patch, sign with the devkit key or a cleared retail signature. The result must match the XexTool command line byte for byte.
+1. **M2 XEX.** Built (see M2 status). Left: try real titles, fix in-place edits on Windows, and let quitting not wait for a running XexTool call.
 2. **M3 XBDM.** Write the protocol client against a mock server so it can be tested without a console, then the file backend (list, transfer, new folder, delete), then the hex memory viewer and editor, which opens read-only.
 3. **M4 STFS.** Starts once the STFS files are relicensed or a clean-room version is chosen.
 4. **M5 packaging.** Windows and macOS drive access, then installers for each platform and CI that builds the app on all of them.

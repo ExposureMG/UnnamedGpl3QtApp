@@ -201,9 +201,17 @@ unlocked; format needs type-to-confirm.
   across parameters). Values are type-checked and validated in the core;
   `runOperation()` reads the source as a stream from any `FileSystem` and
   writes outputs through `OperationIo` (host paths today; files in an output
-  folder must have plain names and are never overwritten; a missing output
-  folder is created). Operations that rewrite the
-  source need `Capability::Replace`; one may do so only on request
+  folder must have plain names, which excludes the names Windows reads as
+  devices, and are never overwritten; a missing output folder is created;
+  an output file is never the source itself, through links or another path
+  to it). Host files are staged in a uniquely named, exclusively created
+  `.<name>.<random>.part` and moved into place on success, without
+  replacing a file that appeared meanwhile when overwriting is off;
+  replacing a file keeps its mode and writes through a symlink, and a
+  read-only file or one with other hard links is refused. Choices need
+  unique option ids, and conditions only values their parameter can hold.
+  Operations that rewrite the source need `Capability::Replace`; one may
+  do so only on request
   (`modifiesSourceWhen`, e.g. a *Write to: a new file / in place* choice),
   and then stays available on read-only places with in place refused.
   `FileSystemOperationIo` reads inputs and writes outputs inside any
@@ -218,19 +226,24 @@ unlocked; format needs type-to-confirm.
   validates through the core and runs it as a cancellable job in
   Transfers. Results are filled in with their suggested names; a name
   without a folder means the current folder when the place is a host
-  folder, otherwise Documents, and the dialog says which and warns before
-  replacing a file. The pickers start there. The listing and details are
-  read again after a tool writes. *Open XEX…* (Open menu, Places) opens
-  the file's folder as a place with the file selected and described.
+  folder, otherwise Documents, and the dialog says which. Replacing a
+  file, in place or as an existing output, asks first; why a tool cannot
+  run yet shows at the top of the form. The pickers start there. The
+  listing and details are read again after a tool writes. *Open XEX…*
+  (Open menu, Places) opens the file's folder as a place with the file
+  selected and described.
   Checked headless with screenshots (checksum, hex dump, conditional
-  fields, typing into the fields, cancel from Transfers, narrow window),
-  with Qt's own file and folder dialogs, which an offscreen run gets.
+  fields, typing into the fields, cancel from Transfers, narrow window,
+  the replace confirmations, an output named like the source), with Qt's
+  own file and folder dialogs, which an offscreen run gets.
   **Not verified**: the platform's native pickers (KDE, Windows, macOS);
   Qt's own save dialog leaves the file name empty instead of showing the
   suggested one
 - [x] XEX handler (`XexHandler`, `-DUNNAMED_WITH_XEX=ON`) on the XexTool
-  fork's `xextool_core` (branch `xex-core`, only `XexApi.h` included).
-  Recognises XEX2 (and XEX1, which XexTool cannot read: no tools) by magic.
+  fork's `xextool_core` (branch `xex-core`, pinned at `4d85a98`, only
+  `XexApi.h` included). Recognises XEX2 (and XEX1, which XexTool cannot
+  read: no tools) by magic; a delta patch (`.xexp`) gets Info and Export
+  Info only.
   Expanded view: executable, execution ID, security (machine, encryption,
   compression, regions, media, keys, sections), ratings, libraries,
   resources. Tools: Info (the `-l` report or the summary, optionally saved),
@@ -241,23 +254,41 @@ unlocked; format needs type-to-confirm.
   (`-r`), Add Bounding Path (`-a`), Fix Updated Executable (`-u`), Export and
   Import Info XML (`-z g`, `-z s`). Every xex edit writes a new file by
   default or the source in place on request. Files are read whole into
-  memory (refused above 512 MiB; the expanded view stops at 64 MiB); XexTool
-  calls cannot be interrupted, so cancelling acts between read, process and
-  write. `tests/xex_tests.cpp` runs each tool over the fork's golden samples
-  and compares SHA-256 and report text with the CLI's golden record
-  (`extern/XexTool/tests/golden/expected.txt`); passes in Debug and under
-  ASan/UBSan. Driven headless through the real QML on the golden samples:
-  details, Info, Decrypt, Encrypt, Compress, Sign (devkit and retail),
+  memory (refused above 512 MiB; the expanded view stops at 64 MiB of file
+  or of claimed image); a file whose header claims an image over 64 MiB and
+  more than 256 times its size is refused as damaged. XexTool calls cannot
+  be interrupted, so cancelling acts between read, process and write, and
+  quitting waits for a running call. Resource names that are unsafe as
+  file names are refused; a bounding path must be printable ASCII of up to
+  255 characters. `tests/xex_tests.cpp` runs each tool over the fork's
+  golden samples and compares SHA-256 and report text with the CLI's golden
+  record (`extern/XexTool/tests/golden/expected.txt`), and checks the
+  refusals; passes in Debug and under ASan/UBSan. One known difference from
+  XexTool before the fork's library split (e965cd1), in the fork's
+  command line too: a patch whose headers drop restriction entries (such
+  as the bounding device id) gives a xex without them, where e965cd1 kept
+  the unpatched xex's (`XexApi.h`, covered by the fork's `api_test`).
+  Driven headless through the real QML on the golden samples: details,
+  Info, Decrypt, Encrypt, Compress, Sign (devkit and retail),
   Apply Patch, Remove Limits, Add Bounding Path and Resources write files
   with the golden record's hashes; in place on a host folder and on a
   writable FATX image (the result matches the command line and
   `fsck.fatx` is clean); in place is refused on a read-only image and when
-  FATX cannot fit a larger file; damaged files give named errors.
+  FATX cannot fit a larger file; damaged files give named errors. Two
+  independent reviews of M2 found 12 distinct problems; all were confirmed
+  and fixed with regression tests (the patch-header difference by
+  documenting and testing it), except that quitting still waits for a
+  running XexTool call. After the fixes, 224 crafted files and 4,000
+  fuzzed inputs through the handler under ASan/UBSan gave no report.
   **Not exposed**: special patches (`-s`, a per-title bit mask),
   the `-x` XML facts, `pack` (its input is an ELF), several edits in one run
   (run them one after another), extracting a subset of resources.
-  **Not verified**: real console titles and consoles running the output.
-  The GUI writes new files to host paths only
+  **Known issue**: in place on a Windows host folder fails ("Permission
+  denied"): the source is still open when the result is renamed over it,
+  which Windows refuses (found under Wine with the MinGW build; not fixed).
+  **Not verified**: real console titles and consoles running the output;
+  real Windows, where the no-replace move (`MoveFileExW`) and the
+  device-name checks matter. The GUI writes new files to host paths only
 
 ## Risks
 
