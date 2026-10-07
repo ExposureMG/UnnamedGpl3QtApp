@@ -216,6 +216,8 @@ private:
     void openFatxDevice(const QString& hostPath, const QString& displayName, bool isDrive);
     int indexOfRuntime(const MountRuntime* runtime) const;
     void runtimeReplaced(int index);
+    // Lets a closed place go once its worker is done, off the UI thread.
+    void retire(std::shared_ptr<MountRuntime> rt);
     void navigate(const QString& path, const QString& selectAfter = {});
     void setLoading(bool loading);
     void setSelectedName(const QString& name);

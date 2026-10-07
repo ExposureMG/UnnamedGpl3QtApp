@@ -170,14 +170,24 @@ FileBrowser::FileBrowser(QObject* parent)
       m_mounts(new MountModel(this)),
       m_jobs(new JobModel(this)) {
     connect(m_model, &FileSystemModel::countChanged, this, &FileBrowser::stateChanged);
+    // A cancel reaches a call blocked on the network at once.
+    connect(m_jobs, &JobModel::cancelRequested, this, [this](int id, const void* owner) {
+        if (const int i = indexOfRuntime(static_cast<const MountRuntime*>(owner)); i >= 0)
+            m_mounts->at(i).runtime->interruptJob(id);
+    });
 }
 
 FileBrowser::~FileBrowser() {
     // Stop worker threads before the models they report to go away.
-    m_openPool.waitForDone();
     for (int i = 0; i < m_mounts->count(); ++i) {
         const auto& rt = m_mounts->at(i).runtime;
         m_jobs->cancelAllFor(rt.get());
+        if (rt->interrupt)
+            rt->interrupt();
+    }
+    m_openPool.waitForDone();
+    for (int i = 0; i < m_mounts->count(); ++i) {
+        const auto& rt = m_mounts->at(i).runtime;
         rt->pool.clear();
         rt->pool.waitForDone();
     }
@@ -297,7 +307,9 @@ void FileBrowser::runJob(const QString& title, const std::shared_ptr<MountRuntim
     };
 
     rt->pool.start(QRunnable::create([this, rt, id, work = std::move(work), done = std::move(done), ctx] {
+        rt->beginJob(id);
         const core::Status status = work(*rt->fs, ctx);
+        rt->endJob();
         QMetaObject::invokeMethod(
             this,
             [this, id, status, done] {
@@ -543,6 +555,12 @@ int FileBrowser::indexOfRuntime(const MountRuntime* runtime) const {
     return -1;
 }
 
+// The last reference must not go on the place's own worker, whose pool would
+// then wait for itself; a console says goodbye when it goes.
+void FileBrowser::retire(std::shared_ptr<MountRuntime> rt) {
+    m_openPool.start([rt = std::move(rt)] { rt->pool.waitForDone(); });
+}
+
 // After a place's filesystem was replaced or changed as a whole.
 void FileBrowser::runtimeReplaced(int index) {
     m_mounts->changed(index);
@@ -676,7 +694,10 @@ void FileBrowser::closeMount(int index) {
     const auto rt = m_mounts->at(index).runtime;
     const bool wasCurrent = index == currentMount();
     m_jobs->cancelAllFor(rt.get());
+    if (rt->interrupt)
+        rt->interrupt();
     m_mounts->remove(index);
+    retire(rt);
     if (!wasCurrent) {
         emit stateChanged();
         return;

@@ -68,6 +68,7 @@ void JobModel::cancel(int row) {
         m_jobs[row].cancelFlag->store(true);
         m_jobs[row].message = tr("Cancelling…");
         emit dataChanged(index(row), index(row), {MessageRole});
+        emit cancelRequested(m_jobs[row].id, m_jobs[row].owner);
     }
 }
 

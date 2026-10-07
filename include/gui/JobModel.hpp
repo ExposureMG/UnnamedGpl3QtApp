@@ -44,6 +44,8 @@ public:
 signals:
     void activeCountChanged();
     void countChanged();
+    // The user cancelled the running job `id` of `owner` (cancel()).
+    void cancelRequested(int id, const void* owner);
 
 private:
     struct Job {
