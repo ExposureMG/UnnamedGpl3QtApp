@@ -4,6 +4,7 @@
 
 #include <QThreadPool>
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -42,6 +43,9 @@ struct MountRuntime {
     // where a cancel flag does not reach them (a console waiting on the
     // network); empty otherwise. Thread-safe.
     const std::function<void()> interrupt;
+    // Set when the place is closed: what is still queued on its worker then
+    // does nothing.
+    std::atomic_bool closed{false};
     QThreadPool pool;
 
 private:

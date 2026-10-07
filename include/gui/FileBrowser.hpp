@@ -261,6 +261,9 @@ private:
     void openFatxDevice(const QString& hostPath, const QString& displayName, bool isDrive);
     int indexOfRuntime(const MountRuntime* runtime) const;
     int indexOfFileSystem(const void* filesystem) const;
+    // The place of the console with this id on this port, reached under any
+    // address; -1 for none or an empty id.
+    int indexOfConsole(const QString& consoleId, int port) const;
     void runtimeReplaced(int index);
     // Lets a closed place go once its worker is done, off the UI thread.
     void retire(std::shared_ptr<MountRuntime> rt);

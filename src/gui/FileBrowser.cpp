@@ -202,16 +202,15 @@ FileBrowser::~FileBrowser() {
         m_connectCancel->store(true);
     for (int i = 0; i < m_mounts->count(); ++i) {
         const auto& rt = m_mounts->at(i).runtime;
+        rt->closed = true;
+        rt->pool.clear();
         m_jobs->cancelAllFor(rt.get());
         if (rt->interrupt)
             rt->interrupt();
     }
     m_openPool.waitForDone();
-    for (int i = 0; i < m_mounts->count(); ++i) {
-        const auto& rt = m_mounts->at(i).runtime;
-        rt->pool.clear();
-        rt->pool.waitForDone();
-    }
+    for (int i = 0; i < m_mounts->count(); ++i)
+        m_mounts->at(i).runtime->pool.waitForDone();
 }
 
 std::shared_ptr<MountRuntime> FileBrowser::runtime() const {
@@ -347,9 +346,13 @@ void FileBrowser::runJob(const QString& title, const std::shared_ptr<MountRuntim
     };
 
     rt->pool.start(QRunnable::create([this, rt, id, work = std::move(work), done = std::move(done), ctx] {
-        rt->beginJob(id);
-        const core::Status status = work(*rt->fs, ctx);
-        rt->endJob();
+        // Cancelled, or its place closed, while it waited in the queue.
+        core::Status status = core::Status::cancelledByUser();
+        if (!ctx.cancelled() && !rt->closed) {
+            rt->beginJob(id);
+            status = work(*rt->fs, ctx);
+            rt->endJob();
+        }
         QMetaObject::invokeMethod(
             this,
             [this, id, status, done] {
@@ -596,7 +599,8 @@ void FileBrowser::setDiscoveryTarget(const QString& broadcastAddress, quint16 po
 
 void FileBrowser::discoverConsoles() {
 #ifdef UNNAMED_WITH_XBDM
-    if (m_discovering)
+    // A cancelled search still finishing is replaced; its result is dropped.
+    if (m_discovering && !m_discoveryCancel->load())
         return;
     m_discovering = true;
     m_discoveryError.clear();
@@ -657,7 +661,7 @@ void FileBrowser::connectConsole(const QString& host, int port) {
     if (m_connecting)
         return;
     if (address.isEmpty()) {
-        setConnectError(tr("Type the console's address or name."));
+        setConnectError(tr("Type the console's IP address."));
         return;
     }
     if (port < 1 || port > 65535) {
@@ -718,16 +722,26 @@ void FileBrowser::connectConsole(const QString& host, int port) {
         const QString type = QString::fromStdString(console->consoleType());
         mount->subtitle = type.isEmpty() ? tr("Console · %1").arg(key) : QStringLiteral("%1 · %2").arg(type, key);
         mount->isConsole = true;
+        const QString consoleId = QString::fromStdString(console->consoleId());
         core::XbdmFileSystem* raw = console.get();
         mount->runtime = std::make_shared<MountRuntime>(std::move(console), [raw] { raw->cancel(); });
         QMetaObject::invokeMethod(
             this,
-            [this, cancel, mount, address, port] {
+            [this, cancel, mount, address, port, consoleId] {
                 if (m_connectCancel == cancel)
                     m_connecting = false;
                 if (cancel->load()) {
                     retire(mount->runtime);
                     emit connectingChanged();
+                    return;
+                }
+                // The same console under another address keeps one place, so
+                // that its changes stay in one queue.
+                if (const int same = indexOfConsole(consoleId, port); same >= 0) {
+                    retire(mount->runtime);
+                    setConnectError({});
+                    selectMount(same);
+                    emit consoleConnected();
                     return;
                 }
                 saveConsole(mount->name, address, port);
@@ -888,6 +902,24 @@ int FileBrowser::indexOfRuntime(const MountRuntime* runtime) const {
     return -1;
 }
 
+int FileBrowser::indexOfConsole(const QString& consoleId, int port) const {
+#ifdef UNNAMED_WITH_XBDM
+    if (consoleId.isEmpty())
+        return -1;
+    for (int i = 0; i < m_mounts->count(); ++i) {
+        const Mount& m = m_mounts->at(i);
+        const auto* console = dynamic_cast<const core::XbdmFileSystem*>(m.runtime->fs.get());
+        if (console && QString::fromStdString(console->consoleId()) == consoleId &&
+            m.hostPath.section(QLatin1Char(':'), -1).toInt() == port)
+            return i;
+    }
+#else
+    Q_UNUSED(consoleId);
+    Q_UNUSED(port);
+#endif
+    return -1;
+}
+
 int FileBrowser::indexOfFileSystem(const void* filesystem) const {
     for (int i = 0; i < m_mounts->count(); ++i) {
         if (m_mounts->at(i).runtime->fs.get() == filesystem)
@@ -1034,6 +1066,7 @@ void FileBrowser::closeMount(int index) {
         return;
     const auto rt = m_mounts->at(index).runtime;
     const bool wasCurrent = index == currentMount();
+    rt->closed = true;
     m_jobs->cancelAllFor(rt.get());
     if (rt->interrupt)
         rt->interrupt();
@@ -1088,6 +1121,8 @@ void FileBrowser::navigate(const QString& path, const QString& selectAfter) {
     setLoading(true);
 
     rt->pool.start(QRunnable::create([this, rt, path, selectAfter, generation] {
+        if (rt->closed)
+            return;
         std::vector<core::Entry> entries;
         const core::Status status = rt->fs->list(path.toStdString(), entries);
         QMetaObject::invokeMethod(
@@ -1164,6 +1199,8 @@ void FileBrowser::refreshDetails() {
     const bool canReplace = core::hasCapability(rt->capabilities, core::Capability::Replace);
     const core::FormatHandlerRegistry handlers = m_handlers; // shared, stateless handlers
     rt->pool.start(QRunnable::create([this, rt, target, generation, inspect, tools, canReplace, handlers] {
+        if (rt->closed)
+            return;
         core::Details item, filesystem;
         const bool haveItem = inspect && bool(rt->fs->describe(target, item));
         const bool haveFs = inspect && bool(rt->fs->describeFileSystem(filesystem));

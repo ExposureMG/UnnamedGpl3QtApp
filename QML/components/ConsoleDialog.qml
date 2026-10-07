@@ -77,7 +77,7 @@ Kirigami.Dialog {
                 id: addressField
                 objectName: "addressField"
                 Layout.fillWidth: true
-                placeholderText: qsTr("192.168.1.20 or the console's name")
+                placeholderText: qsTr("IP address, such as 192.168.1.20")
                 enabled: !FileBrowser.connecting
                 Keys.onReturnPressed: if (text.trim() !== "")
                     root.connectTo(text, portField.value)
