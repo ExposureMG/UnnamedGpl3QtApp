@@ -24,11 +24,15 @@
 // opened again before its next use. A command that finds its connection
 // dropped by the console is sent again once, on a new connection. That cannot
 // change anything twice: a second new folder, delete or rename of the same
-// name is refused, so a lost answer at worst reports an error for a change
-// that happened. File data is never sent again. A console that stops
-// responding or cannot be reached puts the place in the Disconnected state:
-// every call then fails at once, instead of each waiting for its own
-// timeout, until a new connection reaches the console (reconnect()).
+// name is refused. The drop may have come after the console carried out the
+// first one, so that refusal counts as success when the console shows the
+// change done (the folder exists; the file is gone; the old name is gone and
+// the new one exists). File data is never sent again. A console that stops
+// responding or cannot be reached on the command connection puts the place in
+// the Disconnected state: every call then fails at once, instead of each
+// waiting for its own timeout, until a new connection reaches the console
+// (reconnect()). An extra connection that cannot be opened fails its call
+// only.
 //
 // Writes. A new file is uploaded under a temporary name in its folder and
 // renamed in finish(), so nothing appears under the final name before the
@@ -36,8 +40,16 @@
 // temporary file is then deleted over a new connection, or listed by
 // leftoverFiles() when that fails. Replacing a file deletes the old one right
 // before the rename; if the rename then fails, or the answer to that delete
-// is lost, the upload is kept under its temporary name, which the error names
-// (and leftoverFiles() lists), and is never deleted.
+// is lost (a cancel included), the console is asked where the upload is: a
+// rename that took effect is success; otherwise the result is a failure,
+// never a plain cancel, that says whether the upload is kept under its
+// temporary name (or may be, when the console cannot be asked), which
+// leftoverFiles() then lists and which is never deleted.
+//
+// Known gap (UpdClient's FileWriter::finish() always replaces): with
+// overwrite false the final name is checked once, before the data is sent
+// (for an unknown size, in finish()); a file that another client creates
+// under that name while the data is sent is deleted and replaced.
 
 #include "core/FileSystem.hpp"
 
@@ -120,6 +132,9 @@ public:
     // The console's type as it answered at connect ("devkit", ...); empty
     // when it did not.
     std::string consoleType() const;
+    // The console's id (getconsoleid) as it answered at connect; empty when
+    // it did not.
+    std::string consoleId() const;
     // Connections this place holds now (the console may have closed some).
     std::size_t openConnections() const;
     // Closes the command connection, opens it again and deletes the temporary
@@ -127,14 +142,18 @@ public:
     Status reconnect();
     // Ends every call and transfer in progress on this place at once; they
     // fail as cancelled and their connections are opened again on next use.
+    // A call still opening an extra connection is reached too, once its TCP
+    // connect returns (that connect cannot be interrupted).
     void cancel() noexcept;
     // A connection of its own to the same console, outside this place's
     // connections, for tools that need the whole protocol (a memory viewer).
     // It counts against the console's connection limit. The caller owns it and
     // uses it from one thread; its cancel() works from any.
     Result<std::unique_ptr<updclient::xbdm::XbdmClient>> openClient() const;
-    // Console paths of temporary uploads still on the console: ones that
-    // could not be deleted, and ones kept because they hold the only copy.
+    // Console paths of temporary uploads still on the console: ones kept
+    // because they hold the only copy, then ones that could not be deleted.
+    // describeFileSystem() asks the console again and drops the ones that are
+    // gone.
     std::vector<std::string> leftoverFiles() const;
 
 private:

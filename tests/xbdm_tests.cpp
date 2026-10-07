@@ -281,6 +281,7 @@ void capabilityFlags(Link link) {
         CHECK(!hasCapability(caps, c));
     CHECK(fs->name() == "MockDevkit");
     CHECK(fs->consoleType() == "devkit");
+    CHECK(fs->consoleId() == "0123456789ab");
     CHECK(fs->connectionState() == XbdmConnectionState::Connected);
     CHECK(fs->connectionError().empty());
 
@@ -636,8 +637,8 @@ void replaceKeepsTheOnlyCopy(Link link) {
     TransferOptions overwrite;
     overwrite.overwrite = true;
     const Status st = copyTree(host, "/new.xex", *console, "/HDD/default.xex", overwrite);
-    CHECK(!st);
-    CHECK(st.message.find("kept on the console as /HDD/default.xex.") != std::string::npos);
+    CHECK(!st && !st.cancelled);
+    CHECK(st.message.find("Its new contents are kept on the console as /HDD/default.xex.") != std::string::npos);
     const auto left = console->leftoverFiles();
     CHECK(left.size() == 1);
     if (left.size() == 1) {
@@ -646,11 +647,240 @@ void replaceKeepsTheOnlyCopy(Link link) {
     }
     Details d;
     CHECK_OK(console->describeFileSystem(d));
+    CHECK(d.notice.starts_with("Kept on the console as the only copy"));
     CHECK(d.notice.find("/HDD/default.xex.") != std::string::npos);
     // never deleted, not even by a reconnect
     CHECK_OK(console->reconnect());
     CHECK(console->leftoverFiles().size() == 1);
     CHECK(partFilesBelow(rig.mock, "HDD:\\").size() == 1);
+    // forgotten once it is gone from the console
+    if (left.size() == 1)
+        CHECK(static_cast<bool>(rig.mock.removePath(left[0])));
+    CHECK_OK(console->describeFileSystem(d));
+    CHECK(d.notice.empty());
+    CHECK(console->leftoverFiles().empty());
+}
+
+// A replace cancelled once its old file may be gone is never just
+// "cancelled": the console is asked where the upload is.
+void cancelledReplace(Link link) {
+    Rig rig(link);
+    if (rig.skipped)
+        return;
+    XbdmConnectOptions o = rig.options();
+    o.client.idleTimeout = 10s; // the cancel must not wait for it
+    auto console = rig.connect(o);
+    if (!console)
+        return;
+    const Bytes fresh = ut::bytesOf("NEW!");
+    const auto replace = [&](const std::string& path, const std::string& command) {
+        const size_t before = rig.commandsNamed(command);
+        Status st;
+        std::thread writer([&] {
+            auto sink = console->openWrite(path, fresh.size(), true);
+            st = sink.status();
+            if (st)
+                st = sink.value()->write(fresh.data(), fresh.size());
+            if (st)
+                st = sink.value()->finish();
+        });
+        CHECK(waitFor([&] { return rig.commandsNamed(command) > before; }));
+        std::this_thread::sleep_for(100ms);
+        console->cancel();
+        writer.join();
+        return st;
+    };
+
+    // the console carries out the rename, and its answer never comes
+    CHECK(static_cast<bool>(rig.mock.addFile("HDD:\\keep.bin", ut::bytesOf("old"))));
+    rig.mock.inject(XbdmFault::stall(0).on("rename"));
+    Status st = replace("/HDD/keep.bin", "rename");
+    CHECK_OK(st);
+    CHECK(rig.mock.fileData("HDD:\\keep.bin") == fresh);
+    CHECK(console->leftoverFiles().empty());
+    CHECK(partFilesBelow(rig.mock, "HDD:\\").empty());
+
+    // cancelled while the old file is deleted: the upload is the only copy
+    CHECK(static_cast<bool>(rig.mock.addFile("HDD:\\keep2.bin", ut::bytesOf("old"))));
+    rig.mock.inject(XbdmFault::stall(0).on("delete"));
+    st = replace("/HDD/keep2.bin", "delete");
+    CHECK(!st && !st.cancelled);
+    CHECK(st.message.find("cancelled while the old file was being replaced. Its new contents are kept on the "
+                          "console as /HDD/keep2.bin.") != std::string::npos);
+    const auto left = console->leftoverFiles();
+    CHECK(left.size() == 1);
+    if (left.size() == 1)
+        CHECK(rig.mock.fileData(left[0]) == fresh);
+    CHECK(!rig.mock.entry("HDD:\\keep2.bin"));
+    CHECK(console->connectionState() == XbdmConnectionState::Connected);
+
+    // a refused rename of an upload whose name reads like the library's
+    // "kept" message: nothing was deleted first, so nothing is kept
+    rig.mock.clearFaults();
+    auto sink = console->openWrite("/HDD/a is kept as b", 3, false);
+    CHECK_OK(sink.status());
+    if (sink) {
+        CHECK_OK(sink.value()->write("abc", 3));
+        rig.mock.inject(XbdmFault::statusLine("414- access denied").on("rename"));
+        const Status refused = sink.value()->finish();
+        CHECK(!refused && refused.message.find("kept on the console") == std::string::npos);
+    }
+    CHECK(console->leftoverFiles().size() == 1);
+}
+
+// A change whose connection drops after the console carried it out is sent
+// again; the repeat's refusal is then that change having happened.
+void resentChanges(Link link) {
+    Rig rig(link);
+    if (rig.skipped)
+        return;
+    auto console = rig.connect();
+    if (!console)
+        return;
+
+    rig.mock.inject(XbdmFault::dropAfterBytes(0).on("mkdir"));
+    CHECK_OK(console->makeDirectory("/HDD/NewDir"));
+    const auto made = rig.mock.entry("HDD:\\NewDir");
+    CHECK(made && made->directory);
+    CHECK(rig.commandsNamed("mkdir") == 2);
+    CHECK_FAILS(console->makeDirectory("/HDD/NewDir"), "Already exists");
+
+    for (const char* path : {"HDD:\\T\\a.bin", "HDD:\\T\\b.bin", "HDD:\\T\\c.bin", "HDD:\\U\\a.bin"})
+        CHECK(static_cast<bool>(rig.mock.addFile(path, ut::bytesOf("x"))));
+    rig.mock.inject(XbdmFault::dropAfterBytes(0).on("delete"));
+    CHECK_OK(console->remove("/HDD/T"));
+    CHECK(!rig.mock.entry("HDD:\\T"));
+    // the folder's own delete
+    rig.mock.inject(XbdmFault::dropAfterBytes(0).on("delete").after(1));
+    CHECK_OK(console->remove("/HDD/U"));
+    CHECK(!rig.mock.entry("HDD:\\U"));
+    rig.mock.inject(XbdmFault::dropAfterBytes(0).on("delete"));
+    CHECK_OK(console->remove("/HDD/Attrs/ro.txt"));
+    CHECK(!rig.mock.entry("HDD:\\Attrs\\ro.txt"));
+
+    rig.mock.inject(XbdmFault::dropAfterBytes(0).on("rename"));
+    CHECK_OK(console->rename("/HDD/default.xex", "renamed.xex"));
+    CHECK(rig.mock.entry("HDD:\\renamed.xex") && !rig.mock.entry("HDD:\\default.xex"));
+    // a change of case only goes through a temporary name: both renames
+    rig.mock.inject(XbdmFault::dropAfterBytes(0).on("rename"));
+    CHECK_OK(console->rename("/HDD/renamed.xex", "RENAMED.xex"));
+    rig.mock.inject(XbdmFault::dropAfterBytes(0).on("rename").after(1));
+    CHECK_OK(console->rename("/HDD/RENAMED.xex", "Renamed.xex"));
+    const auto names = rig.mock.listNames("HDD:\\").value_or(std::vector<std::string>{});
+    CHECK(std::find(names.begin(), names.end(), "Renamed.xex") != names.end());
+    for (const auto& name : names)
+        CHECK(!name.starts_with("~ren"));
+    CHECK(console->connectionState() == XbdmConnectionState::Connected);
+}
+
+// cancel() reaches a call that is still opening an extra connection, and
+// such a connection failing leaves the place connected.
+void cancelWhileConnecting(Link link) {
+    Rig rig(link);
+    if (rig.skipped)
+        return;
+    XbdmConnectOptions o = rig.options();
+    o.client.greetingTimeout = 5000ms;
+    auto console = rig.connect(o);
+    if (!console)
+        return;
+    std::vector<Entry> entries;
+    {
+        // the download holds the command connection
+        auto source = console->openRead("/HDD/default.xex");
+        CHECK_OK(source.status());
+        rig.mock.inject(XbdmFault::stall(0).onGreeting().always());
+        const size_t accepted = rig.mock.connectionsAccepted();
+        Status st;
+        const auto start = std::chrono::steady_clock::now();
+        std::thread lister([&] { st = console->list("/HDD", entries); });
+        CHECK(waitFor([&] { return rig.mock.connectionsAccepted() > accepted; }));
+        std::this_thread::sleep_for(200ms);
+        console->cancel();
+        lister.join();
+        CHECK(!st && st.cancelled);
+        CHECK(std::chrono::steady_clock::now() - start < 2s);
+        CHECK(console->connectionState() == XbdmConnectionState::Connected);
+        rig.mock.clearFaults();
+    }
+
+    o.client.greetingTimeout = 500ms;
+    auto quick = rig.connect(o);
+    if (!quick)
+        return;
+    {
+        auto source = quick->openRead("/HDD/default.xex");
+        CHECK_OK(source.status());
+        rig.mock.inject(XbdmFault::stall(0).onGreeting().always());
+        CHECK_FAILS(quick->list("/HDD", entries), "stopped responding");
+        CHECK(quick->connectionState() == XbdmConnectionState::Connected);
+        rig.mock.clearFaults();
+        Bytes buffer(30000);
+        auto n = source.value()->read(buffer.data(), buffer.size());
+        CHECK(n && n.value() == 20000);
+    }
+    CHECK_OK(quick->list("/HDD", entries));
+}
+
+// The sizing pass of a copy stops at a cancel, from the progress callback or
+// from cancel() during a listing, instead of walking the rest of the tree.
+void cancelWhileSizing(Link link) {
+    Rig rig(link);
+    if (rig.skipped)
+        return;
+    XbdmConnectOptions o = rig.options();
+    o.client.idleTimeout = 10s;
+    auto console = rig.connect(o);
+    if (!console)
+        return;
+    for (int a = 0; a < 4; ++a)
+        for (int b = 0; b < 4; ++b)
+            for (int c = 0; c < 4; ++c)
+                CHECK(static_cast<bool>(rig.mock.addFile("HDD:\\S\\" + std::to_string(a) + "\\" +
+                                                             std::to_string(b) + "\\" + std::to_string(c) +
+                                                             "\\f.bin",
+                                                         ut::bytesOf("x"))));
+    const fs::path dir = freshDir(std::string("sizing-") + linkName(link));
+    LocalFileSystem host(dir);
+
+    size_t lists = rig.commandsNamed("dirlist");
+    TransferOptions stop;
+    stop.progress = [](const TransferProgress&) { return false; };
+    Status st = copyTree(*console, "/HDD/S", host, "/S", stop);
+    CHECK(!st && st.cancelled);
+    CHECK(rig.commandsNamed("dirlist") - lists <= 1);
+    CHECK(!fs::exists(dir / "S"));
+
+    std::atomic_bool cancelled{false};
+    TransferOptions watched;
+    watched.progress = [&](const TransferProgress&) { return !cancelled.load(); };
+    lists = rig.commandsNamed("dirlist");
+    rig.mock.inject(XbdmFault::stall(0).on("dirlist").after(2));
+    std::thread copier([&] { st = copyTree(*console, "/HDD/S", host, "/S", watched); });
+    CHECK(waitFor([&] { return rig.commandsNamed("dirlist") >= lists + 3; }));
+    std::this_thread::sleep_for(100ms);
+    cancelled = true;
+    console->cancel();
+    copier.join();
+    CHECK(!st && st.cancelled);
+    CHECK(rig.commandsNamed("dirlist") == lists + 3);
+    CHECK(!fs::exists(dir / "S"));
+}
+
+// A path the console refuses as too long is not "no such file".
+void longPaths(Link link) {
+    ut::XbdmMockOptions limited = mockOptions();
+    limited.maxLineLength = 120;
+    Rig rig(link, limited);
+    if (rig.skipped)
+        return;
+    auto console = rig.connect();
+    if (!console)
+        return;
+    const std::string path = "/HDD/" + std::string(40, 'b') + "/" + std::string(40, 'c') + "/" + std::string(40, 'd');
+    Entry entry;
+    CHECK_FAILS(console->stat(path, entry), "406");
+    CHECK_FAILS(console->openWrite(path, 1, false).status(), "406");
 }
 
 void errorMapping(Link link) {
@@ -1142,6 +1372,11 @@ int main() {
     forEachLink(cancelLeavesNothing);
     forEachLink(dropMidUpload);
     forEachLink(replaceKeepsTheOnlyCopy);
+    forEachLink(cancelledReplace);
+    forEachLink(resentChanges);
+    forEachLink(cancelWhileConnecting);
+    forEachLink(cancelWhileSizing);
+    forEachLink(longPaths);
     forEachLink(errorMapping);
     forEachLink(connectionLimits);
     forEachLink(listingDuringTransfer);

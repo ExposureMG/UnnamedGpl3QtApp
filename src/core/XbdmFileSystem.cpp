@@ -144,6 +144,72 @@ updclient::Result<T> failed(const updclient::Error& e) {
     return updclient::unexpected<updclient::Error>(e);
 }
 
+// Lets cancel() reach a connection that is still being opened, before the
+// client that will own it exists.
+struct OpenGuard {
+    std::mutex mutex;
+    bool opening = false;
+    bool cancelled = false;
+    net::ITransport* transport = nullptr; // the slot's newest connection
+
+    void begin() {
+        std::lock_guard<std::mutex> lock(mutex);
+        opening = true;
+        cancelled = false;
+    }
+    // Whether cancel() came while opening.
+    bool end() {
+        std::lock_guard<std::mutex> lock(mutex);
+        opening = false;
+        return std::exchange(cancelled, false);
+    }
+    void cancel() noexcept {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!opening)
+            return;
+        cancelled = true;
+        if (transport)
+            transport->close();
+    }
+};
+
+// A slot's connection, known to its guard while it exists.
+class GuardedTransport final : public net::ITransport {
+public:
+    GuardedTransport(net::TransportPtr inner, std::shared_ptr<OpenGuard> guard)
+        : m_inner(std::move(inner)), m_guard(std::move(guard)) {
+        std::lock_guard<std::mutex> lock(m_guard->mutex);
+        m_guard->transport = this;
+        if (m_guard->opening && m_guard->cancelled)
+            m_inner->close();
+    }
+    ~GuardedTransport() override {
+        std::lock_guard<std::mutex> lock(m_guard->mutex);
+        if (m_guard->transport == this)
+            m_guard->transport = nullptr;
+    }
+
+    bool isOpen() const noexcept override { return m_inner->isOpen(); }
+    void close() noexcept override { m_inner->close(); }
+    std::string describe() const override { return m_inner->describe(); }
+    updclient::Result<void> setTimeout(std::chrono::milliseconds timeout) override {
+        return m_inner->setTimeout(timeout);
+    }
+    updclient::Result<std::size_t> readSome(std::span<std::uint8_t> buffer) override {
+        return m_inner->readSome(buffer);
+    }
+    updclient::Result<std::size_t> writeSome(std::span<const std::uint8_t> data) override {
+        return m_inner->writeSome(data);
+    }
+
+private:
+    net::TransportPtr m_inner;
+    std::shared_ptr<OpenGuard> m_guard;
+};
+
+// Where an upload is after a replace failed once the old file may be gone.
+enum class UploadPlace { Kept, MaybeKept, Replaced, Gone };
+
 } // namespace
 
 // --- connections ---------------------------------------------------------------
@@ -151,6 +217,7 @@ updclient::Result<T> failed(const updclient::Error& e) {
 struct XbdmFileSystem::Impl : std::enable_shared_from_this<XbdmFileSystem::Impl> {
     struct Slot {
         std::unique_ptr<xbdm::XbdmClient> client;
+        std::shared_ptr<OpenGuard> guard = std::make_shared<OpenGuard>();
         bool primary = false;
         bool busy = false;
     };
@@ -161,6 +228,7 @@ struct XbdmFileSystem::Impl : std::enable_shared_from_this<XbdmFileSystem::Impl>
     std::string name;
     std::string address;
     std::string type;
+    std::string consoleId;
 
     mutable std::mutex mutex;
     // slots[0] is the command connection; the others live for one call or
@@ -176,7 +244,9 @@ struct XbdmFileSystem::Impl : std::enable_shared_from_this<XbdmFileSystem::Impl>
     void release(Slot* slot) noexcept;
     updclient::Result<void> open(Slot& slot);
 
-    Status failure(const updclient::Error& e, const std::string& what);
+    // noteState: a timeout or an unreachable console makes the place
+    // Disconnected.
+    Status failure(const updclient::Error& e, const std::string& what, bool noteState = true);
     Status pathFailure(Lease& lease, const updclient::Error& e, const std::string& what,
                        const std::string& consolePath);
     Status missing(Lease& lease, const std::string& message, const std::string& consolePath);
@@ -185,14 +255,18 @@ struct XbdmFileSystem::Impl : std::enable_shared_from_this<XbdmFileSystem::Impl>
     std::string notConnected() const;
 
     template <class Call>
-    auto query(Lease& lease, Call&& call) -> decltype(call(std::declval<xbdm::XbdmClient&>()));
+    auto query(Lease& lease, Call&& call, bool* resent = nullptr)
+        -> decltype(call(std::declval<xbdm::XbdmClient&>()));
     updclient::Result<std::optional<xbdm::FileAttributes>> lookUp(Lease& lease, const std::string& consolePath,
                                                                   bool needSize);
+    bool renamed(Lease& lease, const std::string& from, const std::string& to);
     Status prepareUpload(Lease& lease, const std::string& consolePath, const std::string& path, bool overwrite,
                          std::optional<std::uint64_t> size);
     Status removeTree(Lease& lease, const std::string& consolePath, const std::string& path, bool self);
 
     void cleanUp(Lease& lease, const std::string& temp) noexcept;
+    UploadPlace locateUpload(Lease& lease, const std::string& temp, const std::string& consolePath,
+                             std::uint64_t size) noexcept;
     void sweepLeftovers(Lease& lease) noexcept;
     void addLeftover(const std::string& consolePath, bool keep);
 };
@@ -275,8 +349,10 @@ Result<Lease> XbdmFileSystem::Impl::acquire(const std::string& what) {
         slot->busy = true;
     }
     Lease lease(shared_from_this(), slot);
+    // An extra connection that cannot be opened fails this call only; the
+    // command connection decides whether the console is reachable.
     if (auto r = open(*slot); !r)
-        return failure(r.error(), what);
+        return failure(r.error(), what, slot->primary);
     return lease;
 }
 
@@ -316,7 +392,18 @@ updclient::Result<void> XbdmFileSystem::Impl::open(Slot& slot) {
         return {};
     if (slot.client)
         return slot.client->reconnect();
-    auto client = xbdm::XbdmClient::open(connector, options.client);
+    xbdm::XbdmClient::Connector guarded = [base = connector,
+                                           guard = slot.guard]() -> updclient::Result<net::TransportPtr> {
+        auto made = base();
+        if (!made)
+            return made;
+        net::TransportPtr wrapped = std::make_unique<GuardedTransport>(std::move(*made), guard);
+        return wrapped;
+    };
+    slot.guard->begin();
+    auto client = xbdm::XbdmClient::open(std::move(guarded), options.client);
+    if (slot.guard->end())
+        return updclient::fail(ErrorCode::Cancelled, "cancelled while connecting");
     if (!client)
         return failed<void>(client.error());
     auto made = std::make_unique<xbdm::XbdmClient>(std::move(*client));
@@ -325,7 +412,7 @@ updclient::Result<void> XbdmFileSystem::Impl::open(Slot& slot) {
     return {};
 }
 
-Status XbdmFileSystem::Impl::failure(const updclient::Error& e, const std::string& what) {
+Status XbdmFileSystem::Impl::failure(const updclient::Error& e, const std::string& what, bool noteState) {
     if (e.code == ErrorCode::Cancelled)
         return Status::cancelledByUser();
     if (const auto code = xbdm::consoleStatusCode(e)) {
@@ -352,14 +439,16 @@ Status XbdmFileSystem::Impl::failure(const updclient::Error& e, const std::strin
     switch (e.code) {
     case ErrorCode::ConnectFailed: {
         const std::string reason = "cannot reach " + address + ": " + connectReason(e);
-        setState(XbdmConnectionState::Disconnected, reason);
+        if (noteState)
+            setState(XbdmConnectionState::Disconnected, reason);
         return Status::failure(what + ": " + reason);
     }
     case ErrorCode::Timeout: {
         const std::string reason = e.message.starts_with("connect to ")
                                        ? "cannot reach " + address + ": " + connectReason(e)
                                        : name + " stopped responding (" + e.message + ")";
-        setState(XbdmConnectionState::Disconnected, reason);
+        if (noteState)
+            setState(XbdmConnectionState::Disconnected, reason);
         return Status::failure(what + ": " + reason);
     }
     case ErrorCode::Disconnected:
@@ -410,20 +499,36 @@ Result<std::string> XbdmFileSystem::Impl::mountedDrive(Lease& lease, const std::
 }
 
 // A query that finds its connection dropped while idle is sent again once,
-// on a new connection.
+// on a new connection (*resent). The drop may have come after the console
+// carried out the first one, so a refusal of a resent change can be that
+// change having happened.
 template <class Call>
-auto XbdmFileSystem::Impl::query(Lease& lease, Call&& call) -> decltype(call(std::declval<xbdm::XbdmClient&>())) {
+auto XbdmFileSystem::Impl::query(Lease& lease, Call&& call, bool* resent)
+    -> decltype(call(std::declval<xbdm::XbdmClient&>())) {
+    if (resent)
+        *resent = false;
     auto r = call(lease.client());
     if (r || !lostWhileIdle(r.error()))
         return r;
     if (auto again = open(lease.slot()); !again)
         return updclient::unexpected<updclient::Error>(again.error());
+    if (resent)
+        *resent = true;
     return call(lease.client());
 }
 
+// Whether `from` is gone and `to` exists, as after a rename.
+bool XbdmFileSystem::Impl::renamed(Lease& lease, const std::string& from, const std::string& to) {
+    auto source = lookUp(lease, from, false);
+    if (!source || *source)
+        return false;
+    auto target = lookUp(lease, to, false);
+    return target && target->has_value();
+}
+
 // getfileattributes, or the parent's listing when the console does not know
-// that command, or (needSize) sent no size. nullopt: no such path. Other
-// refusals (access denied) are errors.
+// that command, or (needSize) sent no size. nullopt: no such path. Access
+// denied, and a path too long for the console (406, 446), are errors.
 updclient::Result<std::optional<xbdm::FileAttributes>>
 XbdmFileSystem::Impl::lookUp(Lease& lease, const std::string& consolePath, bool needSize) {
     std::optional<xbdm::FileAttributes> known;
@@ -434,7 +539,7 @@ XbdmFileSystem::Impl::lookUp(Lease& lease, const std::string& consolePath, bool 
         known = *direct;
     } else {
         const auto code = xbdm::consoleStatusCode(direct.error());
-        if (!code || *code == xbdm::status::kCannotAccess)
+        if (!code || *code == xbdm::status::kCannotAccess || direct.error().code == ErrorCode::LimitExceeded)
             return failed<std::optional<xbdm::FileAttributes>>(direct.error());
         if (*code != xbdm::status::kInvalidCommand)
             return std::optional<xbdm::FileAttributes>{};
@@ -445,7 +550,7 @@ XbdmFileSystem::Impl::lookUp(Lease& lease, const std::string& consolePath, bool 
         return known;
     auto listing = lease.client().list(*parent);
     if (!listing) {
-        if (xbdm::consoleStatusCode(listing.error()))
+        if (xbdm::consoleStatusCode(listing.error()) && listing.error().code != ErrorCode::LimitExceeded)
             return known;
         return failed<std::optional<xbdm::FileAttributes>>(listing.error());
     }
@@ -510,12 +615,40 @@ void XbdmFileSystem::Impl::cleanUp(Lease& lease, const std::string& temp) noexce
     }
 }
 
+// Asked on the upload's connection, opened again when it was closed: the
+// temporary name, then the final one.
+UploadPlace XbdmFileSystem::Impl::locateUpload(Lease& lease, const std::string& temp, const std::string& consolePath,
+                                               std::uint64_t size) noexcept {
+    try {
+        if (auto r = open(lease.slot()); !r)
+            return UploadPlace::MaybeKept;
+        setState(XbdmConnectionState::Connected, {});
+        xbdm::XbdmClient& c = lease.client();
+        auto upload = c.attributes(temp);
+        if (upload)
+            return UploadPlace::Kept;
+        if (xbdm::consoleStatusCode(upload.error()) != xbdm::status::kNoSuchFile)
+            return UploadPlace::MaybeKept;
+        auto target = c.attributes(consolePath);
+        if (target && !target->isDirectory && (!target->sizeKnown || target->size == size))
+            return UploadPlace::Replaced;
+        if (!target && xbdm::consoleStatusCode(target.error()) == xbdm::status::kNoSuchFile)
+            return UploadPlace::Gone;
+        return UploadPlace::MaybeKept;
+    } catch (...) {
+        return UploadPlace::MaybeKept;
+    }
+}
+
+// Deletes the temporary uploads left over; forgets kept copies that are no
+// longer there (never deleting one).
 void XbdmFileSystem::Impl::sweepLeftovers(Lease& lease) noexcept {
     try {
-        std::vector<std::string> todo;
+        std::vector<std::string> todo, keptTodo;
         {
             std::lock_guard<std::mutex> lock(mutex);
             todo = leftovers;
+            keptTodo = kept;
         }
         for (const std::string& temp : todo) {
             auto present = lease.client().attributes(temp);
@@ -525,6 +658,13 @@ void XbdmFileSystem::Impl::sweepLeftovers(Lease& lease) noexcept {
                 continue;
             std::lock_guard<std::mutex> lock(mutex);
             leftovers.erase(std::remove(leftovers.begin(), leftovers.end(), temp), leftovers.end());
+        }
+        for (const std::string& copy : keptTodo) {
+            auto present = lease.client().attributes(copy);
+            if (present || xbdm::consoleStatusCode(present.error()) != xbdm::status::kNoSuchFile)
+                continue;
+            std::lock_guard<std::mutex> lock(mutex);
+            kept.erase(std::remove(kept.begin(), kept.end(), copy), kept.end());
         }
     } catch (...) {
     }
@@ -574,10 +714,14 @@ Status XbdmFileSystem::Impl::removeTree(Lease& lease, const std::string& console
 
     std::size_t done = 0;
     for (const Item& item : order) {
-        auto r = query(lease, [&](xbdm::XbdmClient& c) {
-            return item.directory ? c.removeDirectory(item.path) : c.removeFile(item.path);
-        });
-        if (!r) {
+        bool resent = false;
+        auto r = query(
+            lease,
+            [&](xbdm::XbdmClient& c) {
+                return item.directory ? c.removeDirectory(item.path) : c.removeFile(item.path);
+            },
+            &resent);
+        if (!r && !(resent && xbdm::consoleStatusCode(r.error()) == xbdm::status::kNoSuchFile)) {
             Status st = failure(r.error(), "Cannot delete " + virtualOf(item.path));
             if (!st.cancelled && done > 0)
                 st.message += " (" + std::to_string(done) + " of " + std::to_string(order.size()) +
@@ -685,22 +829,53 @@ public:
             m_lease.release();
             return Status::success();
         }
-        // The old file was deleted (or may have been) and the rename failed:
-        // the upload is the only copy, kept under its temporary name.
-        if (r.error().message.find(" is kept as ") != std::string::npos) {
-            const std::string temp = m_writer.temporaryPath();
-            m_impl->addLeftover(temp, true);
-            Status st = m_impl->failure(r.error(), "Cannot write " + m_path);
-            st.message += ". Its new contents are kept on the console as " + virtualOf(temp);
-            m_ended = true;
-            m_lease.release();
-            return st;
-        }
+        if (keptByLibrary(r.error()))
+            return kept(r.error());
         Status st = m_impl->failure(r.error(), "Cannot write " + m_path);
         abandon();
         return st;
     }
 
+private:
+    // The old file was deleted (or may have been) before the rename failed:
+    // the library then keeps the upload under its temporary name, and says so
+    // at the end of its error.
+    bool keptByLibrary(const updclient::Error& e) const {
+        const std::string marker =
+            "; the upload is kept as " + m_writer.temporaryPath() + ", since " + m_writer.path() + " ";
+        return e.message.ends_with(marker + "was deleted") || e.message.ends_with(marker + "may have been deleted");
+    }
+
+    // Never a plain "cancelled": the console's only copy may now be the
+    // upload, so the result says where it is, as far as the console tells.
+    Status kept(const updclient::Error& e) {
+        const std::string what = "Cannot write " + m_path;
+        const std::string temp = m_writer.temporaryPath();
+        m_ended = true;
+        Status st = m_impl->failure(e, what);
+        std::string message = st.cancelled ? what + ": cancelled while the old file was being replaced" : st.message;
+        const UploadPlace place = m_impl->locateUpload(m_lease, temp, m_writer.path(), m_writer.size());
+        m_lease.release();
+        switch (place) {
+        case UploadPlace::Replaced: return Status::success();
+        case UploadPlace::Kept:
+            m_impl->addLeftover(temp, true);
+            message += ". Its new contents are kept on the console as " + virtualOf(temp);
+            break;
+        case UploadPlace::MaybeKept:
+            m_impl->addLeftover(temp, true);
+            message += ". Its new contents may be kept on the console as " + virtualOf(temp) +
+                       " (the console could not be asked)";
+            break;
+        case UploadPlace::Gone:
+            message += ". Its new contents, uploaded as " + virtualOf(temp) + ", are no longer on the console, and "
+                       "nothing is at " + m_path;
+            break;
+        }
+        return Status::failure(message);
+    }
+
+public:
     // Nothing appears under the final name; the temporary file is deleted.
     void abandon() noexcept {
         if (m_ended)
@@ -912,6 +1087,8 @@ Result<std::unique_ptr<XbdmFileSystem>> XbdmFileSystem::connect(XbdmConnectOptio
         impl->name = printable(*debugName);
     if (auto type = lease.value().client().consoleType())
         impl->type = printable(*type);
+    if (auto id = lease.value().client().consoleId())
+        impl->consoleId = printable(*id);
     lease.value().release();
     return std::unique_ptr<XbdmFileSystem>(new XbdmFileSystem(std::move(impl)));
 }
@@ -1127,9 +1304,20 @@ Status XbdmFileSystem::describeFileSystem(Details& out) const {
     out.groups.push_back(std::move(caps));
 
     impl.sweepLeftovers(l);
-    const auto left = leftoverFiles();
+    std::vector<std::string> keptCopies, left;
+    {
+        std::lock_guard<std::mutex> lock(impl.mutex);
+        keptCopies = impl.kept;
+        left = impl.leftovers;
+    }
+    if (!keptCopies.empty()) {
+        out.notice = "Kept on the console as the only copy of a file that was being replaced:";
+        for (const auto& p : keptCopies)
+            out.notice += " " + virtualOf(p);
+    }
     if (!left.empty()) {
-        out.notice = "Temporary uploads are left on the console:";
+        out.notice += out.notice.empty() ? "" : ". ";
+        out.notice += "Temporary uploads are left on the console:";
         for (const auto& p : left)
             out.notice += " " + virtualOf(p);
     }
@@ -1216,10 +1404,17 @@ Status XbdmFileSystem::makeDirectory(const std::string& path) {
     auto lease = impl.acquire(what);
     if (!lease)
         return lease.status();
-    auto r = impl.query(lease.value(), [&](xbdm::XbdmClient& c) { return c.makeDirectory(cp); });
+    bool resent = false;
+    auto r = impl.query(lease.value(), [&](xbdm::XbdmClient& c) { return c.makeDirectory(cp); }, &resent);
     if (!r) {
-        if (xbdm::consoleStatusCode(r.error()) == xbdm::status::kAlreadyExists)
+        if (xbdm::consoleStatusCode(r.error()) == xbdm::status::kAlreadyExists) {
+            if (resent) {
+                auto made = impl.lookUp(lease.value(), cp, false);
+                if (made && *made && (*made)->isDirectory)
+                    return Status::success();
+            }
             return Status::failure("Already exists: " + path);
+        }
         return impl.pathFailure(lease.value(), r.error(), what, cp);
     }
     return Status::success();
@@ -1253,11 +1448,14 @@ Status XbdmFileSystem::rename(const std::string& path, const std::string& newNam
         char tempName[32];
         std::snprintf(tempName, sizeof tempName, "~ren%08x.tmp", static_cast<unsigned>(std::random_device{}()));
         auto temp = xbdm::joinPath(*xbdm::parentOf(cp), tempName);
-        if (auto r = impl.query(l, [&](xbdm::XbdmClient& c) { return c.rename(cp, *temp); }); !r)
+        bool resent = false;
+        if (auto r = impl.query(l, [&](xbdm::XbdmClient& c) { return c.rename(cp, *temp); }, &resent);
+            !r && !(resent && impl.renamed(l, cp, *temp)))
             return impl.pathFailure(l, r.error(), what, cp);
-        if (auto r = l.client().rename(*temp, *target); !r) {
+        if (auto r = impl.query(l, [&](xbdm::XbdmClient& c) { return c.rename(*temp, *target); }, &resent);
+            !r && !(resent && impl.renamed(l, *temp, *target))) {
             Status st = impl.failure(r.error(), what);
-            if (!l.client().rename(*temp, cp))
+            if (!impl.query(l, [&](xbdm::XbdmClient& c) { return c.rename(*temp, cp); }))
                 st.message += "; it is left as " + virtualOf(*temp);
             return st;
         }
@@ -1269,7 +1467,9 @@ Status XbdmFileSystem::rename(const std::string& path, const std::string& newNam
         return impl.pathFailure(l, existing.error(), what, *target);
     if (*existing)
         return Status::failure("Already exists: " + newName);
-    if (auto r = impl.query(l, [&](xbdm::XbdmClient& c) { return c.rename(cp, *target); }); !r)
+    bool resent = false;
+    if (auto r = impl.query(l, [&](xbdm::XbdmClient& c) { return c.rename(cp, *target); }, &resent);
+        !r && !(resent && impl.renamed(l, cp, *target)))
         return impl.pathFailure(l, r.error(), what, cp);
     return Status::success();
 }
@@ -1295,7 +1495,9 @@ Status XbdmFileSystem::remove(const std::string& path) {
     if (!*found)
         return impl.missing(l, "No such file or folder: " + path, cp);
     if (!(*found)->isDirectory) {
-        if (auto r = impl.query(l, [&](xbdm::XbdmClient& c) { return c.removeFile(cp); }); !r)
+        bool resent = false;
+        if (auto r = impl.query(l, [&](xbdm::XbdmClient& c) { return c.removeFile(cp); }, &resent);
+            !r && !(resent && xbdm::consoleStatusCode(r.error()) == xbdm::status::kNoSuchFile))
             return impl.pathFailure(l, r.error(), what, cp);
         return Status::success();
     }
@@ -1341,6 +1543,8 @@ std::string XbdmFileSystem::address() const { return m_impl->address; }
 
 std::string XbdmFileSystem::consoleType() const { return m_impl->type; }
 
+std::string XbdmFileSystem::consoleId() const { return m_impl->consoleId; }
+
 std::size_t XbdmFileSystem::openConnections() const {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     return static_cast<std::size_t>(std::count_if(m_impl->slots.begin(), m_impl->slots.end(),
@@ -1365,8 +1569,11 @@ Status XbdmFileSystem::reconnect() {
 void XbdmFileSystem::cancel() noexcept {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     for (auto& slot : m_impl->slots) {
-        if (slot->busy && slot->client)
+        if (!slot->busy)
+            continue;
+        if (slot->client)
             slot->client->cancel();
+        slot->guard->cancel();
     }
 }
 
