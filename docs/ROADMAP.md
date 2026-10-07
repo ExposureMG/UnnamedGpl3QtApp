@@ -310,8 +310,9 @@ Everything below has run only against UpdClient's mock console. No console
 or emulator has been connected.
 
 - [x] Protocol client: UpdClient's `updclient_lib` (`extern/UpdClient`,
-  ExposureMG/UpdClient `main` at `ad83582`), written with its mock console
-  from the contract in `extern/UpdClient/docs/XBDM_PROTOCOL.md`.
+  ExposureMG/UpdClient `main` at `ad83582`, registered as a submodule by the
+  owner in `c089e0e`), written with its mock console from the contract in
+  `extern/UpdClient/docs/XBDM_PROTOCOL.md`.
   `UNNAMED_WITH_XBDM` (ON by default) builds it into the core without its
   command line tool, tests, install rules and warning flags; a clone
   without that submodule configures without XBDM, with a message. Offline:
@@ -335,11 +336,17 @@ or emulator has been connected.
   temporary file). An abandoned or dropped upload is deleted over a new
   connection, or listed as left over (`leftoverFiles()`, and in the
   console's details); after a failed replace the upload, then the only
-  copy, is kept and named in the error. Folders are deleted by the client
-  after their whole tree was listed: nothing is deleted when it is nested
-  deeper than 32 levels, holds more than 100,000 entries or an entry whose
-  name cannot be sent back; drives and the root are never deleted or
-  cleared. Entries the library skips (names with separators, `..`, control
+  copy, is kept and named in the error. A replace that is cancelled or cut
+  off once the old file may be gone asks the console where the upload is:
+  a rename that took effect is success; otherwise it fails, never as just
+  "cancelled", and says the upload is kept (or may be, when the console
+  cannot be asked); the console's details list kept copies apart from
+  leftovers and forget them once the console no longer has them. A path
+  the console refuses as too long (406, 446) is an error, not "not
+  found". Folders are deleted by the client after their whole tree was
+  listed: nothing is deleted when it is nested deeper than 32 levels, holds
+  more than 100,000 entries or an entry whose name cannot be sent back;
+  drives and the root are never deleted or cleared. Entries the library skips (names with separators, `..`, control
   characters) never reach `copyTree`, so a hostile console cannot make an
   extract write outside its target
 - [x] Connections: one command connection per place. A call that finds it
@@ -349,11 +356,17 @@ or emulator has been connected.
   "connection limit reached". A command whose connection the console
   dropped while idle is sent again once on a new connection (a second new
   folder, delete or rename of the same name is refused, so nothing happens
-  twice; file data is never resent). A timeout or an unreachable console
-  puts the place in the Disconnected state (`connectionState()`,
+  twice; file data is never resent); since the drop may have come after
+  the first one took effect, that refusal counts as success when the
+  console shows the change done, so a recursive delete no longer stops
+  half way on it. A timeout or an unreachable console on the command
+  connection puts the place in the Disconnected state (`connectionState()`,
   `connectionError()`, `onStateChanged`): calls then fail at once until
-  `reconnect()`. `cancel()` ends calls and transfers in progress from any
-  thread. `openClient()` hands out a connection of its own for a memory
+  `reconnect()`; an extra connection that cannot be opened fails its call
+  only. `cancel()` ends calls and transfers in progress from any thread,
+  a call still opening an extra connection included (once its TCP connect
+  returns). `consoleId()` is the console's id from `getconsoleid`.
+  `openClient()` hands out a connection of its own for a memory
   viewer. `connectXbdm(host, port)` and `discoverConsoles()` (the library's
   UDP discovery, one search, cancellable) are the API for the GUI
 - [x] `tests/xbdm_tests.cpp` (ctest `xbdm_tests`, built with XBDM only)
@@ -362,16 +375,26 @@ or emulator has been connected.
   `copyTree` matrix between a host folder and the console both ways (trees,
   empty files and folders, odd names, 300 small files, 64 MiB), console to
   console, unknown sizes, cancel from the progress callback and from another
-  thread, drops during uploads, the kept copy after a failed replace, error
-  mapping (not found, exists, access denied, no space, drive not mounted,
-  connection limits, 4 GiB), a listing during a transfer, reconnects after
-  drops, an unreachable and a silent console, hostile names and drive
-  names, delete limits, discovery with cancel, the registry kind.
-  `UNNAMED_XBDM_HUGE=1` adds 4 GiB - 1 each way (run once, passes). Clean
-  with `-Wall -Wextra -Wpedantic` on GCC 16 and clang 23, under ASan/UBSan
-  and TSan; the core with XBDM cross-compiles with MinGW, warning-free
-  (not run under Wine: the sandbox of that session refused wineserver).
-  The app builds with XBDM on and off
+  thread, drops during uploads, the kept copy after a failed replace (and
+  forgotten once gone), a replace cancelled during the delete and during
+  the rename, an upload named like the library's "kept" message, new
+  folder, delete (a file, a tree, the folder itself) and rename (case only
+  included) whose answer is lost after the console carried them out, a
+  cancel while an extra connection waits for its greeting, an extra
+  connection whose greeting times out, a cancel during the sizing pass of
+  a copy, a path refused as too long, error mapping (not found, exists,
+  access denied, no space, drive not mounted, connection limits, 4 GiB), a
+  listing during a transfer, reconnects after drops, an unreachable and a
+  silent console, hostile names and drive names, delete limits, discovery
+  with cancel, the registry kind. `UNNAMED_XBDM_HUGE=1` adds 4 GiB - 1 each
+  way (run once, before this review round, passes). Clean with `-Wall
+  -Wextra -Wpedantic` on GCC 16 and clang 23 (the app's own code; clang
+  warns about `UDisks2.cpp`'s sd-bus macro, and the FATX fork's `fatx`
+  tool, which `fatx_tests` needs, does not compile with clang 23), under
+  ASan/UBSan (all five test programs) and TSan (`core_tests`, `xbdm_tests`,
+  three runs); the core with XBDM cross-compiles with MinGW, warning-free
+  (not run under Wine: the sandbox refused wineserver). The app builds
+  with XBDM on and off (GCC) and with XBDM on (clang)
 - [x] GUI, checked against the mock only. *Connect to Console…* (Open
   menu and Places): address and port (730), the consoles that answer a
   search of the network (in the background, with Stop and Search Again; a
@@ -399,6 +422,23 @@ or emulator has been connected.
   console killed mid-upload, the offer to reconnect, reconnecting while it
   is down and once it is back, closing during a transfer and closing an
   idle place (`bye`), the saved console forgotten, a 400-pixel-wide window.
+  A job cancelled while it waits behind another, or whose place is closed,
+  no longer runs (a queued Delete used to delete anyway and end as
+  Succeeded). The same console reached under another address (127.1 for
+  127.0.0.1) selects its existing place, recognised by its console id and
+  port, so that its changes stay in one queue. A search stopped and started
+  again at once runs again instead of showing the stopped one's empty
+  result. The address must be an IP address: UpdClient resolves no names.
+  Checked headless through the real QML against the mock console in the
+  harness's own process (screenshots read): a queued Delete cancelled in
+  Transfers, a place closed with a Delete queued, the same console under
+  127.1, a search restarted at once, and a replace cancelled during the
+  delete, which ends as Failed with the kept copy named in the error and in
+  the console's details. The same harness against the previous GUI code
+  failed on the first four. A cancel, or closing the place, during the
+  sizing pass of an extract stops it at the next folder: `copyTree` checks
+  for a cancel at every folder, and a listing that ends cancelled stops it
+  (it used to walk the rest of the tree, reconnecting for each folder).
   *Run on Console* (launch a xex with `magicboot`) is not built: file tools
   read a file as a stream wherever it lives and do not know their place,
   so launching belongs with a console's own actions (with the memory
@@ -406,22 +446,33 @@ or emulator has been connected.
 - [ ] Memory viewer and editor (read-only first), on `openClient()`
 - [ ] Verified on hardware: devkits (XDKBuild, RGLoader), a retail console
   with Glitch2 and an XBDM plugin, Xenia, Xenon, one protocol for all. The
-  checklist is `extern/UpdClient/docs/HARDWARE_TEST_PLAN.md`; it is not in
-  UpdClient `ad83582` (the merge left it and `ARCHITECTURE.md` out, which
-  the README still links), but it is in that repo's history at `0f96753`
+  protocol checklist is `extern/UpdClient/docs/HARDWARE_TEST_PLAN.md`; it
+  is not in UpdClient `ad83582` (the merge left it and `ARCHITECTURE.md`
+  out, which the README still links), but it is in that repo's history at
+  `0f96753`. The app's own checklist is in `docs/HANDOFF.md`
 
 #### M3 notes
 
 - Library gaps found while building on it, for UpdClient's owner: the
   public headers live under `include/core/`, `include/net/`, ... without a
   project prefix, beside the app's own `include/core/` (no file clashes
-  today); `FileWriter::finish()` always replaces, so a file created by
-  someone else between the app's check and the rename is deleted (no
-  "do not replace" mode); whether a failed replace kept the upload is only
-  in the error's text; a dropped idle connection cannot be told apart from
-  one dropped mid-command; `XbdmDiscovery` cannot be cancelled except
-  through the socket factory; `XbdmClient::rename()` cannot change only
-  the case of a name.
+  today); `FileWriter::finish()` always replaces, so with overwrite off a
+  file created by someone else after the app's check (for a known size,
+  at any time during the transfer) is deleted and replaced (no "do not
+  replace" mode; documented in `XbdmFileSystem.hpp`); whether a failed
+  replace kept the upload is only in the error's text (the app now matches
+  the exact ending, with the temporary and final paths); a dropped idle
+  connection cannot be told apart from one dropped mid-command (the app
+  checks the console after a resent change instead); `XbdmClient::open()`
+  takes no cancel hook (the app wraps the transport to reach the greeting)
+  and the TCP connect cannot be interrupted, so quitting during a connect
+  can wait up to the connect and greeting timeouts (5 s each);
+  `XbdmDiscovery` cannot be cancelled except through the socket factory;
+  `XbdmClient::rename()` cannot change only the case of a name; hosts must
+  be numeric IP addresses (`AI_NUMERICHOST`).
+- The same console under two addresses is recognised by `getconsoleid` and
+  the port. Two consoles that answer the same id on the same port (an
+  emulator might) cannot both be open; unverified on any target.
 - The GUI's search sends to 255.255.255.255:730. `FileBrowser::setDiscoveryTarget()`
   (C++ only) points it elsewhere, as the headless check does for the mock's
   UDP responder; a found console is always offered on TCP port 730, which
@@ -432,7 +483,20 @@ or emulator has been connected.
   the next action, which then offers to reconnect.
 - Selecting a file on a console reads its first 4 KiB for the file tools;
   XBDM cannot stop a download early, so each such read closes that
-  connection, which the next call opens again.
+  connection, which the next call opens again. Each selection also asks
+  for the console's details (six commands, the drive list, free space per
+  drive and a check of leftovers) and, with XEX built in, the XEX handler's
+  details read the whole executable, up to 64 MiB, all on the place's one
+  worker, so navigation waits behind it. Not changed yet: it needs a cheaper
+  details pass for network places.
+- `copyTree` lets each level's listing go before it walks its folders, but
+  has no budget for entries: a hostile console could still make it hold
+  about 100,000 folder names per level, 64 levels deep.
+- Console names that Windows would change (a trailing dot or space, `...`)
+  or open as a device (`CON`, `NUL.txt`, `COM1`, ...) are refused by the
+  host folder on Windows, naming the entry, so an extract fails there
+  rather than merging or misplacing them. Built with MinGW, not run on
+  Windows.
 
 ## Risks
 
