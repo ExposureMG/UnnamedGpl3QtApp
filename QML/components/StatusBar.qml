@@ -18,6 +18,7 @@ QQC2.ToolBar {
     signal openFatxRequested
     signal openXexRequested
     signal openDriveRequested
+    signal openConsoleRequested
 
     position: QQC2.ToolBar.Header
 
@@ -115,6 +116,13 @@ QQC2.ToolBar {
                     visible: FileBrowser.drivesAvailable
                     height: visible ? implicitHeight : 0
                     onTriggered: root.openDriveRequested()
+                }
+                QQC2.MenuItem {
+                    text: qsTr("Connect to Console…")
+                    icon.name: "network-connect"
+                    visible: FileBrowser.xbdmAvailable
+                    height: visible ? implicitHeight : 0
+                    onTriggered: root.openConsoleRequested()
                 }
                 QQC2.MenuItem {
                     text: qsTr("Open Demo (sample data)")

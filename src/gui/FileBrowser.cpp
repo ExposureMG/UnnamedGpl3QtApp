@@ -3,6 +3,9 @@
 #ifdef UNNAMED_WITH_FATX
 #include "core/FatxFileSystem.hpp"
 #endif
+#ifdef UNNAMED_WITH_XBDM
+#include "core/XbdmFileSystem.hpp"
+#endif
 #include "core/Drives.hpp"
 #include "core/Format.hpp"
 #include "core/LocalFileSystem.hpp"
@@ -14,6 +17,7 @@
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QRunnable>
+#include <QSettings>
 #include <QStandardPaths>
 
 #include <cmath>
@@ -47,6 +51,18 @@ QVariantMap toVariant(const core::Details& d) {
 }
 
 QString tr(const char* text) { return QCoreApplication::translate("FileBrowser", text); }
+
+// Saved consoles kept at most.
+constexpr int kMaxSavedConsoles = 20;
+
+core::Status reconnectConsole(core::FileSystem& fs) {
+#ifdef UNNAMED_WITH_XBDM
+    if (auto* console = dynamic_cast<core::XbdmFileSystem*>(&fs))
+        return console->reconnect();
+#endif
+    Q_UNUSED(fs);
+    return core::Status::failure(tr("This place has no connection to open again").toStdString());
+}
 
 const char* kindName(core::ParameterKind kind) {
     switch (kind) {
@@ -175,10 +191,15 @@ FileBrowser::FileBrowser(QObject* parent)
         if (const int i = indexOfRuntime(static_cast<const MountRuntime*>(owner)); i >= 0)
             m_mounts->at(i).runtime->interruptJob(id);
     });
+    loadSavedConsoles();
 }
 
 FileBrowser::~FileBrowser() {
     // Stop worker threads before the models they report to go away.
+    if (m_discoveryCancel)
+        m_discoveryCancel->store(true);
+    if (m_connectCancel)
+        m_connectCancel->store(true);
     for (int i = 0; i < m_mounts->count(); ++i) {
         const auto& rt = m_mounts->at(i).runtime;
         m_jobs->cancelAllFor(rt.get());
@@ -214,6 +235,22 @@ bool FileBrowser::xexAvailable() const {
 }
 
 bool FileBrowser::drivesAvailable() const { return fatxAvailable() && core::drivesSupported(); }
+
+bool FileBrowser::xbdmAvailable() const {
+#ifdef UNNAMED_WITH_XBDM
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool FileBrowser::disconnected() const {
+    return isOpen() && m_mounts->at(currentMount()).isConsole && !m_mounts->at(currentMount()).connected;
+}
+
+QString FileBrowser::connectionError() const {
+    return disconnected() ? m_mounts->at(currentMount()).connectionError : QString();
+}
 
 bool FileBrowser::has(core::Capability cap) const {
     const auto rt = runtime();
@@ -289,7 +326,10 @@ void FileBrowser::setLoading(bool loading) {
 
 // --- background work --------------------------------------------------------
 
-void FileBrowser::runJob(const QString& title, const std::shared_ptr<MountRuntime>& rt, Work work, Done done) {
+void FileBrowser::runJob(const QString& title, const std::shared_ptr<MountRuntime>& rt, Work work, Done done,
+                         bool needsConnection) {
+    if (needsConnection && offerReconnect(rt))
+        return;
     auto cancel = std::make_shared<std::atomic_bool>(false);
     const int id = m_jobs->add(title, rt.get(), cancel);
 
@@ -547,9 +587,310 @@ void FileBrowser::refreshDrives(bool includeLoop) {
     });
 }
 
+// --- consoles --------------------------------------------------------------------
+
+void FileBrowser::setDiscoveryTarget(const QString& broadcastAddress, quint16 port) {
+    m_discoveryAddress = broadcastAddress;
+    m_discoveryPort = port;
+}
+
+void FileBrowser::discoverConsoles() {
+#ifdef UNNAMED_WITH_XBDM
+    if (m_discovering)
+        return;
+    m_discovering = true;
+    m_discoveryError.clear();
+    emit consolesChanged();
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    m_discoveryCancel = cancel;
+    core::XbdmDiscoveryOptions options;
+    options.cancel = cancel;
+    if (!m_discoveryAddress.isEmpty())
+        options.discovery.broadcastAddress = m_discoveryAddress.toStdString();
+    options.discovery.port = m_discoveryPort;
+    m_openPool.start([this, options, cancel] {
+        auto found = core::discoverConsoles(options);
+        auto list = std::make_shared<QVariantList>();
+        QString error;
+        if (found) {
+            for (const core::DiscoveredConsole& c : found.value()) {
+                const QString address = QString::fromStdString(c.address);
+                list->append(QVariantMap{
+                    {QStringLiteral("name"), c.name.empty() ? address : QString::fromStdString(c.name)},
+                    {QStringLiteral("address"), address},
+                    {QStringLiteral("port"), int(c.port)},
+                });
+            }
+        } else if (!found.status().cancelled) {
+            error = QString::fromStdString(found.status().message);
+        }
+        QMetaObject::invokeMethod(
+            this,
+            [this, list, error, cancel] {
+                if (m_discoveryCancel != cancel)
+                    return; // a newer search runs
+                m_discovered = *list;
+                m_discoveryError = error;
+                m_discovering = false;
+                emit consolesChanged();
+            },
+            Qt::QueuedConnection);
+    });
+#endif
+}
+
+void FileBrowser::cancelDiscovery() {
+    if (!m_discovering)
+        return;
+    // What it found so far still arrives.
+    m_discoveryCancel->store(true);
+}
+
+void FileBrowser::setConnectError(const QString& message) {
+    m_connectError = message;
+    emit connectingChanged();
+}
+
+void FileBrowser::connectConsole(const QString& host, int port) {
+#ifdef UNNAMED_WITH_XBDM
+    const QString address = host.trimmed();
+    if (m_connecting)
+        return;
+    if (address.isEmpty()) {
+        setConnectError(tr("Type the console's address or name."));
+        return;
+    }
+    if (port < 1 || port > 65535) {
+        setConnectError(tr("The port must be between 1 and 65535 (XBDM uses 730)."));
+        return;
+    }
+    const QString key = QStringLiteral("%1:%2").arg(address).arg(port);
+    if (const int existing = m_mounts->indexOf(QStringLiteral("XBDM"), key); existing >= 0) {
+        setConnectError({});
+        selectMount(existing);
+        emit consoleConnected();
+        return;
+    }
+    m_connecting = true;
+    m_connectError.clear();
+    emit connectingChanged();
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    m_connectCancel = cancel;
+
+    // Found again from the filesystem itself, which is not made yet.
+    auto self = std::make_shared<std::atomic<const void*>>(nullptr);
+    core::XbdmConnectOptions options;
+    options.host = address.toStdString();
+    options.port = static_cast<std::uint16_t>(port);
+    options.onStateChanged = [this, self](core::XbdmConnectionState) {
+        if (const void* fs = self->load())
+            QMetaObject::invokeMethod(
+                this,
+                [this, fs] {
+                    if (const int i = indexOfFileSystem(fs); i >= 0)
+                        updateConnection(i);
+                },
+                Qt::QueuedConnection);
+    };
+    m_openPool.start([this, options = std::move(options), cancel, self, address, port, key]() mutable {
+        auto opened = core::XbdmFileSystem::connect(std::move(options));
+        if (!opened) {
+            const QString error = QString::fromStdString(opened.status().message);
+            QMetaObject::invokeMethod(
+                this,
+                [this, cancel, error] {
+                    if (m_connectCancel != cancel)
+                        return;
+                    m_connecting = false;
+                    setConnectError(cancel->load() ? QString() : error);
+                },
+                Qt::QueuedConnection);
+            return;
+        }
+        std::shared_ptr<core::XbdmFileSystem> console = std::move(opened.value());
+        self->store(console.get());
+        if (cancel->load())
+            return; // disconnects here, off the UI thread
+        auto mount = std::make_shared<Mount>();
+        mount->name = QString::fromStdString(console->name());
+        mount->kind = QStringLiteral("XBDM");
+        mount->hostPath = key;
+        const QString type = QString::fromStdString(console->consoleType());
+        mount->subtitle = type.isEmpty() ? tr("Console · %1").arg(key) : QStringLiteral("%1 · %2").arg(type, key);
+        mount->isConsole = true;
+        core::XbdmFileSystem* raw = console.get();
+        mount->runtime = std::make_shared<MountRuntime>(std::move(console), [raw] { raw->cancel(); });
+        QMetaObject::invokeMethod(
+            this,
+            [this, cancel, mount, address, port] {
+                if (m_connectCancel == cancel)
+                    m_connecting = false;
+                if (cancel->load()) {
+                    retire(mount->runtime);
+                    emit connectingChanged();
+                    return;
+                }
+                saveConsole(mount->name, address, port);
+                setConnectError({});
+                insertMount(std::move(*mount));
+                emit consoleConnected();
+            },
+            Qt::QueuedConnection);
+    });
+#else
+    Q_UNUSED(port);
+    setConnectError(tr("This build has no console support (%1)").arg(host));
+#endif
+}
+
+void FileBrowser::cancelConnect() {
+    if (!m_connecting)
+        return;
+    m_connectCancel->store(true);
+    m_connecting = false;
+    m_connectError.clear();
+    emit connectingChanged();
+}
+
+void FileBrowser::loadSavedConsoles() {
+    QSettings settings;
+    m_savedConsoles.clear();
+    const int n = settings.beginReadArray(QStringLiteral("Consoles"));
+    for (int i = 0; i < n; ++i) {
+        settings.setArrayIndex(i);
+        const QString address = settings.value(QStringLiteral("address")).toString();
+        const int port = settings.value(QStringLiteral("port"), 730).toInt();
+        if (address.isEmpty() || port < 1 || port > 65535)
+            continue;
+        const QString name = settings.value(QStringLiteral("name")).toString();
+        m_savedConsoles.append(QVariantMap{
+            {QStringLiteral("name"), name.isEmpty() ? address : name},
+            {QStringLiteral("address"), address},
+            {QStringLiteral("port"), port},
+        });
+    }
+    settings.endArray();
+}
+
+void FileBrowser::saveConsole(const QString& name, const QString& address, int port) {
+    QVariantList saved{QVariantMap{
+        {QStringLiteral("name"), name},
+        {QStringLiteral("address"), address},
+        {QStringLiteral("port"), port},
+    }};
+    for (const QVariant& v : m_savedConsoles) {
+        const QVariantMap c = v.toMap();
+        if (saved.size() < kMaxSavedConsoles &&
+            (c.value(QStringLiteral("address")).toString() != address || c.value(QStringLiteral("port")).toInt() != port))
+            saved.append(c);
+    }
+    setSavedConsoles(saved);
+}
+
+void FileBrowser::forgetConsole(const QString& address, int port) {
+    QVariantList kept;
+    for (const QVariant& v : m_savedConsoles) {
+        const QVariantMap c = v.toMap();
+        if (c.value(QStringLiteral("address")).toString() != address || c.value(QStringLiteral("port")).toInt() != port)
+            kept.append(c);
+    }
+    setSavedConsoles(kept);
+}
+
+void FileBrowser::setSavedConsoles(const QVariantList& consoles) {
+    QSettings settings;
+    // A shorter array leaves the old entries behind.
+    settings.remove(QStringLiteral("Consoles"));
+    settings.beginWriteArray(QStringLiteral("Consoles"), int(consoles.size()));
+    for (int i = 0; i < consoles.size(); ++i) {
+        const QVariantMap c = consoles.at(i).toMap();
+        settings.setArrayIndex(i);
+        settings.setValue(QStringLiteral("name"), c.value(QStringLiteral("name")));
+        settings.setValue(QStringLiteral("address"), c.value(QStringLiteral("address")));
+        settings.setValue(QStringLiteral("port"), c.value(QStringLiteral("port")));
+    }
+    settings.endArray();
+    m_savedConsoles = consoles;
+    emit consolesChanged();
+}
+
+void FileBrowser::updateConnection(int index) {
+#ifdef UNNAMED_WITH_XBDM
+    Mount& m = m_mounts->at(index);
+    const auto* console = dynamic_cast<const core::XbdmFileSystem*>(m.runtime->fs.get());
+    if (!console)
+        return;
+    const bool connected = console->connectionState() == core::XbdmConnectionState::Connected;
+    const QString error = QString::fromStdString(console->connectionError());
+    if (connected == m.connected && error == m.connectionError)
+        return;
+    m.connected = connected;
+    m.connectionError = error;
+    m_mounts->changed(index);
+    if (index == currentMount())
+        emit stateChanged();
+#else
+    Q_UNUSED(index);
+#endif
+}
+
+bool FileBrowser::offerReconnect(const std::shared_ptr<MountRuntime>& rt) {
+    const int i = indexOfRuntime(rt.get());
+    if (i < 0 || !m_mounts->at(i).isConsole)
+        return false;
+    updateConnection(i);
+    const Mount& m = m_mounts->at(i);
+    // A reconnect in progress runs first on the place's worker.
+    if (m.connected || m.busy)
+        return false;
+    emit reconnectOffered(i, m.name, m.connectionError);
+    return true;
+}
+
+void FileBrowser::reconnectMount(int index) {
+    if (index < 0 || index >= m_mounts->count())
+        return;
+    Mount& mount = m_mounts->at(index);
+    if (!mount.isConsole || mount.busy)
+        return;
+    mount.busy = true;
+    m_mounts->changed(index);
+    const auto rt = mount.runtime;
+    const QString name = mount.name;
+    runJob(
+        tr("Reconnect to %1").arg(name), rt,
+        [](core::FileSystem& fs, const JobContext&) { return reconnectConsole(fs); },
+        [this, rt, name](const core::Status& st) {
+            const int i = indexOfRuntime(rt.get());
+            if (i < 0)
+                return;
+            m_mounts->at(i).busy = false;
+            m_mounts->changed(i);
+            updateConnection(i);
+            if (st)
+                emit notice(tr("Connected to %1").arg(name));
+            else if (!st.cancelled)
+                setError(QString::fromStdString(st.message));
+            if (i == currentMount()) {
+                emit stateChanged();
+                if (st)
+                    navigate(m_mounts->at(i).currentPath, m_selectedName);
+            }
+        },
+        false);
+}
+
 int FileBrowser::indexOfRuntime(const MountRuntime* runtime) const {
     for (int i = 0; i < m_mounts->count(); ++i) {
         if (m_mounts->at(i).runtime.get() == runtime)
+            return i;
+    }
+    return -1;
+}
+
+int FileBrowser::indexOfFileSystem(const void* filesystem) const {
+    for (int i = 0; i < m_mounts->count(); ++i) {
+        if (m_mounts->at(i).runtime->fs.get() == filesystem)
             return i;
     }
     return -1;
@@ -737,6 +1078,13 @@ void FileBrowser::navigate(const QString& path, const QString& selectAfter) {
     if (!rt)
         return;
     const quint64 generation = ++m_navGeneration;
+    if (offerReconnect(rt)) {
+        setLoading(false);
+        refreshDetails();
+        emit selectionChanged();
+        emit stateChanged();
+        return;
+    }
     setLoading(true);
 
     rt->pool.start(QRunnable::create([this, rt, path, selectAfter, generation] {
@@ -755,7 +1103,7 @@ void FileBrowser::navigate(const QString& path, const QString& selectAfter) {
                                          ? selectAfter
                                          : QString();
                     setError({});
-                } else {
+                } else if (!offerReconnect(rt)) {
                     setError(QString::fromStdString(status.message));
                     if (path != QStringLiteral("/") && m_model->path() != path)
                         navigate(QStringLiteral("/")); // e.g. a remembered folder is gone

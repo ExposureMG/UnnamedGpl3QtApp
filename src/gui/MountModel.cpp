@@ -62,6 +62,8 @@ QVariant MountModel::data(const QModelIndex& index, int role) const {
         QString text = !m.subtitle.isEmpty() ? m.subtitle : m.hostPath.isEmpty() ? m.kind : m.hostPath;
         if (m.reopen) // can be unlocked: say which way it is open
             text += m.writable ? tr(" · read-write") : tr(" · read-only");
+        if (m.isConsole && !m.connected)
+            text += tr(" · disconnected");
         return text;
     }
     case IsCurrentRole: return index.row() == m_current;
@@ -73,6 +75,9 @@ QVariant MountModel::data(const QModelIndex& index, int role) const {
     case IsDriveRole: return m.isDrive;
     case HostPathRole: return m.hostPath;
     case BusyRole: return m.busy;
+    case IsConsoleRole: return m.isConsole;
+    case ConnectedRole: return m.connected;
+    case ConnectionErrorRole: return m.connectionError;
     }
     return {};
 }
@@ -91,6 +96,9 @@ QHash<int, QByteArray> MountModel::roleNames() const {
         {IsDriveRole, "isDrive"},
         {HostPathRole, "hostPath"},
         {BusyRole, "busy"},
+        {IsConsoleRole, "isConsole"},
+        {ConnectedRole, "connected"},
+        {ConnectionErrorRole, "connectionError"},
     };
 }
 

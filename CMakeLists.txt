@@ -138,6 +138,7 @@ if(UNNAMED_BUILD_APP)
         VERSION 1.0
         QML_FILES
             QML/Main.qml
+            QML/components/ConsoleDialog.qml
             QML/components/DetailsView.qml
             QML/components/DrivesDialog.qml
             QML/components/FileGridView.qml

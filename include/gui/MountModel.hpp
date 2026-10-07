@@ -14,8 +14,8 @@ namespace unnamed::gui {
 // One open filesystem ("place") shown in the sidebar.
 struct Mount {
     QString name;
-    QString kind;     // registry kind: "Local", "Demo", later "FATX", ...
-    QString hostPath; // folder/image on the host; empty for kinds without one
+    QString kind;     // registry kind: "Local", "Demo", "FATX", "XBDM", ...
+    QString hostPath; // folder/image on the host, a console's "host:port"; empty for kinds without one
     QString detail;   // which part of hostPath, e.g. a FATX partition ("hd/x2"); usually empty
     QString subtitle; // shown under the name; hostPath when empty
     QString currentPath = QStringLiteral("/");
@@ -25,7 +25,11 @@ struct Mount {
     std::function<core::Result<std::unique_ptr<core::FileSystem>>(bool writable)> reopen;
     bool writable = false;     // opened for writing (after an explicit unlock)
     bool isDrive = false;      // a physical drive rather than an image file
-    bool busy = false;         // being reopened
+    bool busy = false;         // being reopened or reconnected
+    // A console over the network: whether it is connected and, if not, why.
+    bool isConsole = false;
+    bool connected = true;
+    QString connectionError;
 };
 
 class MountModel : public QAbstractListModel {
@@ -46,6 +50,9 @@ public:
         IsDriveRole,
         HostPathRole,
         BusyRole,
+        IsConsoleRole,
+        ConnectedRole,
+        ConnectionErrorRole,
     };
 
     explicit MountModel(QObject* parent = nullptr);

@@ -133,6 +133,7 @@ Item {
 
     Kirigami.PromptDialog {
         id: deleteDialog
+        objectName: "deleteDialog"
         title: qsTr("Delete")
         subtitle: qsTr("Delete “%1”? This cannot be undone.").arg(FileBrowser.selectedName)
         dialogType: Kirigami.PromptDialog.Warning
@@ -143,6 +144,7 @@ Item {
     // Name entry for New Folder and Rename.
     Kirigami.Dialog {
         id: nameDialog
+        objectName: "nameDialog"
 
         property bool renaming: false
 
@@ -163,6 +165,7 @@ Item {
         ColumnLayout {
             QQC2.TextField {
                 id: nameField
+                objectName: "nameField"
                 Layout.preferredWidth: Kirigami.Units.gridUnit * 20
                 placeholderText: qsTr("Name")
                 Keys.onReturnPressed: nameDialog.accept()

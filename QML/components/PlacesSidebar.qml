@@ -13,6 +13,7 @@ ColumnLayout {
     signal openFolderRequested
     signal openFatxRequested
     signal openXexRequested
+    signal openConsoleRequested
 
     spacing: 0
 
@@ -47,6 +48,9 @@ ColumnLayout {
             required property bool isDrive
             required property string hostPath
             required property bool busy
+            required property bool isConsole
+            required property bool connected
+            required property string connectionError
 
             width: ListView.view.width
             highlighted: isCurrent
@@ -55,9 +59,9 @@ ColumnLayout {
 
                 Kirigami.IconTitleSubtitle {
                     Layout.fillWidth: true
-                    icon.name: place.kind === "Local" ? "folder" : place.kind === "Demo" ? "applications-development" : place.isDrive ? "drive-removable-media" : "drive-harddisk"
+                    icon.name: place.kind === "Local" ? "folder" : place.kind === "Demo" ? "applications-development" : place.isConsole ? "network-server" : place.isDrive ? "drive-removable-media" : "drive-harddisk"
                     title: place.name
-                    subtitle: place.busy ? qsTr("Opening…") : place.subtitle
+                    subtitle: place.busy ? (place.isConsole ? qsTr("Connecting…") : qsTr("Opening…")) : place.subtitle
                     selected: place.highlighted
                 }
                 // read-write / read-only badge for places that can switch
@@ -74,6 +78,22 @@ ColumnLayout {
                     QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
                     HoverHandler {
                         id: badgeHover
+                    }
+                }
+                // connected / disconnected badge for consoles
+                Kirigami.Icon {
+                    Layout.fillWidth: false
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                    visible: place.isConsole
+                    source: place.connected ? "network-connect" : "network-offline"
+                    color: place.highlighted ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
+
+                    QQC2.ToolTip.text: place.connected ? qsTr("Connected") : qsTr("Disconnected: %1").arg(place.connectionError)
+                    QQC2.ToolTip.visible: connectionHover.hovered
+                    QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                    HoverHandler {
+                        id: connectionHover
                     }
                 }
             }
@@ -163,6 +183,14 @@ ColumnLayout {
             onTriggered: applicationWindow().confirmFormat(placeMenu.row, placeMenu.place.name, placeMenu.place.hostPath, placeMenu.place.isDrive)
         }
         QQC2.MenuItem {
+            text: qsTr("Reconnect")
+            icon.name: "view-refresh"
+            visible: placeMenu.place !== null && placeMenu.place.isConsole
+            height: visible ? implicitHeight : 0
+            enabled: placeMenu.place !== null && !placeMenu.place.busy
+            onTriggered: FileBrowser.reconnectMount(placeMenu.row)
+        }
+        QQC2.MenuItem {
             text: qsTr("Close")
             icon.name: "dialog-close"
             onTriggered: FileBrowser.closeMount(placeMenu.row)
@@ -202,6 +230,14 @@ ColumnLayout {
         text: qsTr("Open Drive…")
         icon.name: "drive-removable-media"
         onClicked: applicationWindow().openDriveDialog()
+    }
+
+    QQC2.ToolButton {
+        Layout.fillWidth: true
+        visible: FileBrowser.xbdmAvailable
+        text: qsTr("Connect to Console…")
+        icon.name: "network-connect"
+        onClicked: root.openConsoleRequested()
     }
 
     QQC2.ToolButton {

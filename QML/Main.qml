@@ -31,6 +31,7 @@ Kirigami.ApplicationWindow {
         onOpenFatxRequested: root.openFatxDialog()
         onOpenXexRequested: root.openXexDialog()
         onOpenDriveRequested: root.openDriveDialog()
+        onOpenConsoleRequested: root.openConsoleDialog()
     }
 
     globalDrawer: Kirigami.GlobalDrawer {
@@ -92,6 +93,10 @@ Kirigami.ApplicationWindow {
 
     DrivesDialog {
         id: drivesDialog
+    }
+
+    ConsoleDialog {
+        id: consoleDialog
     }
 
     // Shared by the browser toolbar, context menu and details page.
@@ -248,6 +253,29 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    // An action on a console place that lost its connection.
+    Kirigami.PromptDialog {
+        id: reconnectDialog
+        objectName: "reconnectDialog"
+        property int row: -1
+        title: qsTr("Not Connected")
+        preferredWidth: Kirigami.Units.gridUnit * 26
+        maximumWidth: preferredWidth
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Close
+        customFooterActions: [
+            Kirigami.Action {
+                objectName: "reconnectAction"
+                text: qsTr("Reconnect")
+                icon.name: "view-refresh"
+                onTriggered: {
+                    FileBrowser.reconnectMount(reconnectDialog.row);
+                    reconnectDialog.close();
+                }
+            }
+        ]
+    }
+
     Kirigami.PromptDialog {
         id: globalErrorDialog
         title: qsTr("Error")
@@ -267,6 +295,15 @@ Kirigami.ApplicationWindow {
         }
         function onNotice(message) {
             root.showPassiveNotification(message);
+        }
+        function onReconnectOffered(index, name, reason) {
+            // The failure that found the connection gone comes first.
+            const earlier = globalErrorDialog.visible ? globalErrorDialog.subtitle : "";
+            globalErrorDialog.close();
+            const lost = qsTr("“%1” is not connected: %2").arg(name).arg(reason);
+            reconnectDialog.row = index;
+            reconnectDialog.subtitle = earlier !== "" && earlier !== reason ? earlier + "\n\n" + lost : lost;
+            reconnectDialog.open();
         }
         function onReportReady(title, text) {
             reportDialog.title = title;
@@ -295,6 +332,10 @@ Kirigami.ApplicationWindow {
 
     function openDriveDialog() {
         drivesDialog.open();
+    }
+
+    function openConsoleDialog() {
+        consoleDialog.open();
     }
 
     function confirmUnlock(row, name, device, isDrive) {

@@ -73,6 +73,7 @@ Kirigami.Page {
             onOpenFolderRequested: root.app.openFolderDialog()
             onOpenFatxRequested: root.app.openFatxDialog()
             onOpenXexRequested: root.app.openXexDialog()
+            onOpenConsoleRequested: root.app.openConsoleDialog()
         }
 
         Kirigami.Separator {
@@ -269,7 +270,7 @@ Kirigami.Page {
                 FileListView {
                     id: listView
                     anchors.fill: parent
-                    visible: FileBrowser.isOpen && !root.gridMode
+                    visible: FileBrowser.isOpen && !FileBrowser.disconnected && !root.gridMode
                     onContextRequested: (row, item, position) => itemMenu.openFor(item, position)
                     onDeletePressed: root.itemActions.remove.trigger()
                 }
@@ -277,7 +278,7 @@ Kirigami.Page {
                 FileGridView {
                     id: gridView
                     anchors.fill: parent
-                    visible: FileBrowser.isOpen && root.gridMode
+                    visible: FileBrowser.isOpen && !FileBrowser.disconnected && root.gridMode
                     onContextRequested: (row, item, position) => itemMenu.openFor(item, position)
                     onDeletePressed: root.itemActions.remove.trigger()
                 }
@@ -299,9 +300,23 @@ Kirigami.Page {
                 Kirigami.PlaceholderMessage {
                     anchors.centerIn: parent
                     width: parent.width - Kirigami.Units.gridUnit * 4
-                    visible: FileBrowser.isOpen && !FileBrowser.loading && FileBrowser.model.count === 0
+                    visible: FileBrowser.isOpen && !FileBrowser.disconnected && !FileBrowser.loading && FileBrowser.model.count === 0
                     text: FileBrowser.model.totalCount === 0 ? qsTr("This folder is empty") : qsTr("No matches")
                     explanation: FileBrowser.model.totalCount === 0 ? "" : qsTr("Nothing here matches “%1”.").arg(FileBrowser.model.filterText)
+                }
+
+                Kirigami.PlaceholderMessage {
+                    anchors.centerIn: parent
+                    width: parent.width - Kirigami.Units.gridUnit * 4
+                    visible: FileBrowser.disconnected
+                    icon.name: "network-offline"
+                    text: qsTr("Not connected")
+                    explanation: FileBrowser.connectionError
+                    helpfulAction: Kirigami.Action {
+                        text: qsTr("Reconnect")
+                        icon.name: "view-refresh"
+                        onTriggered: FileBrowser.reconnectMount(FileBrowser.currentMount)
+                    }
                 }
 
                 // Drop host files here to add them (when the filesystem allows it).
@@ -368,6 +383,10 @@ Kirigami.Page {
             onOpenXexRequested: {
                 sidebarDrawer.close();
                 root.app.openXexDialog();
+            }
+            onOpenConsoleRequested: {
+                sidebarDrawer.close();
+                root.app.openConsoleDialog();
             }
         }
     }

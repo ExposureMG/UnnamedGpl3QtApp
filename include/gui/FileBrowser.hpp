@@ -46,6 +46,21 @@ class FileBrowser : public QObject {
     Q_PROPERTY(bool xexAvailable READ xexAvailable CONSTANT)
     // Physical drives can be listed and opened on this platform (Linux for now).
     Q_PROPERTY(bool drivesAvailable READ drivesAvailable CONSTANT)
+    // Built with the console backend (UNNAMED_WITH_XBDM, extern/UpdClient).
+    Q_PROPERTY(bool xbdmAvailable READ xbdmAvailable CONSTANT)
+    // Consoles that answered the last search: [{name, address, port}].
+    Q_PROPERTY(QVariantList discoveredConsoles READ discoveredConsoles NOTIFY consolesChanged)
+    Q_PROPERTY(bool discovering READ discovering NOTIFY consolesChanged)
+    // Why the last search failed; empty when it did not.
+    Q_PROPERTY(QString discoveryError READ discoveryError NOTIFY consolesChanged)
+    // Consoles reached before, most recent first: [{name, address, port}].
+    Q_PROPERTY(QVariantList savedConsoles READ savedConsoles NOTIFY consolesChanged)
+    // A connectConsole() in progress, and why the last one failed.
+    Q_PROPERTY(bool connecting READ connecting NOTIFY connectingChanged)
+    Q_PROPERTY(QString connectError READ connectError NOTIFY connectingChanged)
+    // The current place is a console that lost its connection, and why.
+    Q_PROPERTY(bool disconnected READ disconnected NOTIFY stateChanged)
+    Q_PROPERTY(QString connectionError READ connectionError NOTIFY stateChanged)
     // [{path, model, size, removable, readOnly, inUse, readable, xbox, layout, note}]
     Q_PROPERTY(QVariantList drives READ drives NOTIFY drivesChanged)
     Q_PROPERTY(bool drivesLoading READ drivesLoading NOTIFY drivesChanged)
@@ -94,8 +109,17 @@ public:
     bool fatxAvailable() const;
     bool xexAvailable() const;
     bool drivesAvailable() const;
+    bool xbdmAvailable() const;
     QVariantList drives() const { return m_drives; }
     bool drivesLoading() const { return m_drivesLoading; }
+    QVariantList discoveredConsoles() const { return m_discovered; }
+    bool discovering() const { return m_discovering; }
+    QString discoveryError() const { return m_discoveryError; }
+    QVariantList savedConsoles() const { return m_savedConsoles; }
+    bool connecting() const { return m_connecting; }
+    QString connectError() const { return m_connectError; }
+    bool disconnected() const;
+    QString connectionError() const;
 
     QString selectedName() const { return m_selectedName; }
     bool hasSelection() const { return !m_selectedName.isEmpty(); }
@@ -128,6 +152,17 @@ public:
     // Opens a drive read-only (the system may ask for permission); each FATX
     // partition on it becomes a place.
     Q_INVOKABLE void openDrive(const QString& path);
+    // Searches the network for consoles in the background (consolesChanged).
+    Q_INVOKABLE void discoverConsoles();
+    Q_INVOKABLE void cancelDiscovery();
+    // Connects to a console over XBDM in the background; it becomes a place
+    // (consoleConnected) and is remembered, or connectError says why not.
+    Q_INVOKABLE void connectConsole(const QString& host, int port);
+    // Drops a connection attempt in progress.
+    Q_INVOKABLE void cancelConnect();
+    Q_INVOKABLE void forgetConsole(const QString& address, int port);
+    // Opens a console place's connection again; the place keeps its folder.
+    Q_INVOKABLE void reconnectMount(int index);
     Q_INVOKABLE void selectMount(int index);
     Q_INVOKABLE void closeMount(int index);
 
@@ -183,6 +218,11 @@ public:
     Q_INVOKABLE QString resolvePath(const QString& path) const;
     Q_INVOKABLE bool pathExists(const QString& path) const;
 
+    // Where the console search sends its broadcast: 255.255.255.255, port
+    // 730, by default. A directed broadcast (192.168.1.255) keeps it on one
+    // network.
+    void setDiscoveryTarget(const QString& broadcastAddress, quint16 port);
+
 signals:
     void stateChanged();
     void selectionChanged();
@@ -195,6 +235,11 @@ signals:
     void reportReady(const QString& title, const QString& text); // e.g. a health check result
     void drivesChanged();
     void fileOperationsChanged();
+    void consolesChanged();
+    void connectingChanged();
+    void consoleConnected();
+    // An action on a console place that is not connected: offer reconnectMount(index).
+    void reconnectOffered(int index, const QString& name, const QString& reason);
 
 private:
     // Handed to background work: cancellation flag and throttled progress.
@@ -215,14 +260,26 @@ private:
     // Opens every FATX partition on a device in the background and adds them as places.
     void openFatxDevice(const QString& hostPath, const QString& displayName, bool isDrive);
     int indexOfRuntime(const MountRuntime* runtime) const;
+    int indexOfFileSystem(const void* filesystem) const;
     void runtimeReplaced(int index);
     // Lets a closed place go once its worker is done, off the UI thread.
     void retire(std::shared_ptr<MountRuntime> rt);
+    // A console place's connection state, read from its filesystem.
+    void updateConnection(int index);
+    // True (and reconnectOffered) when `rt` is a console that is not connected.
+    bool offerReconnect(const std::shared_ptr<MountRuntime>& rt);
+    void loadSavedConsoles();
+    void saveConsole(const QString& name, const QString& address, int port);
+    void setSavedConsoles(const QVariantList& consoles);
+    void setConnectError(const QString& message);
     void navigate(const QString& path, const QString& selectAfter = {});
     void setLoading(bool loading);
     void setSelectedName(const QString& name);
     void refreshDetails();
-    void runJob(const QString& title, const std::shared_ptr<MountRuntime>& rt, Work work, Done done);
+    // Not run, and reconnecting offered instead, on a console that is not
+    // connected unless `needsConnection` is false.
+    void runJob(const QString& title, const std::shared_ptr<MountRuntime>& rt, Work work, Done done,
+                bool needsConnection = true);
     void finishOperation(const core::Status& status, const QString& successMessage,
                          const QString& selectAfter = {});
     void setError(const QString& message);
@@ -245,6 +302,16 @@ private:
     QString m_errorMessage;
     QVariantList m_drives;
     bool m_drivesLoading = false;
+    QVariantList m_discovered;
+    bool m_discovering = false;
+    QString m_discoveryError;
+    std::shared_ptr<std::atomic_bool> m_discoveryCancel;
+    QString m_discoveryAddress;
+    quint16 m_discoveryPort = 730;
+    QVariantList m_savedConsoles;
+    bool m_connecting = false;
+    QString m_connectError;
+    std::shared_ptr<std::atomic_bool> m_connectCancel;
     QThreadPool m_openPool; // opens images off the UI thread; waited for on destruction
 };
 
