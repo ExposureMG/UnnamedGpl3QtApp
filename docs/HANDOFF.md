@@ -1,19 +1,30 @@
 # Progress and Handoff
 
-> Snapshot of the project's Docs version, 2026-10-05.
+> Snapshot of the project's Docs version, 2026-10-07.
 
 ## Status
 
-Two of six milestones are done: the app browses, extracts, writes and replaces files on FATX images and, on Linux, on drives. The XEX tools (M2) are built and reviewed on Linux. Nothing exists yet for XBDM or STFS, and none of it has been tried on a real console drive or with real titles.
+Two of six milestones are done: the app browses, extracts, writes and replaces files on FATX images and, on Linux, on drives. The XEX tools (M2) are built and reviewed on Linux. For XBDM (M3) the core has a console backend, tested only against a mock console; the GUI does not offer it yet. Nothing exists for STFS, and none of it has been tried on a real console, a console drive or real titles.
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | M0 | Foundations: streams, generic copy, async jobs, folder and rename operations, feature flags | Done |
 | M1 | FATX: browse, write, in-place replace, format, check and repair, drives on Linux | Done on Linux; not tried on a real drive |
 | M2 | XEX: info, extract, decrypt and encrypt, compress and decompress, patch, sign | Built on Linux; matches the command line; not tried with real titles |
-| M3 | XBDM: file transfer, memory viewer and editor | Not started |
+| M3 | XBDM: file transfer, memory viewer and editor | Core file backend built on UpdClient, tested against its mock only; GUI and memory viewer not started; not tried on any console |
 | M4 | STFS: create, inject, extract, delete | Blocked on relicensing or a clean-room version |
 | M5 | Packaging and CI for Linux, Windows, macOS, Android | Not started |
+
+## M3 status
+
+M3 is on the app's `m3-xbdm` branch. The XBDM protocol client is UpdClient (`extern/UpdClient`, ExposureMG/UpdClient `main` at `ad83582`), a separate repository that is used here unchanged.
+
+- `UNNAMED_WITH_XBDM`, ON by default, builds UpdClient's library into the core; without the submodule the build goes on without XBDM.
+- `XbdmFileSystem` shows a console's drives as folders and supports list, details, extract, inject, replace, new folder, rename, delete and clear, with the console's own details (name, type, id, execution state, title address, free space). Names, 4 GiB sizes and full drives are refused before anything is sent. An abandoned upload is deleted, or listed as left over; the only copy after a failed replace is kept and named.
+- One command connection per place, a second one on demand while a transfer runs, `reconnect()`, a Connected or Disconnected state, `cancel()` from any thread, `connectXbdm()`, `discoverConsoles()`, the registry kind `XBDM`, and `openClient()` for a future memory viewer. `docs/ROADMAP.md` (M3 status) has the details.
+- `xbdm_tests` runs it against UpdClient's mock console over an in-memory pipe and loopback TCP, including cancels, drops, reconnects, connection limits and hostile names; 4 GiB - 1 each way on request.
+- Verified only against that mock. Every real target is unverified: devkits running XDKBuild or RGLoader, a retail console running Glitch2 with an XBDM plugin, Xenia and Xenon. The checklist for them is `extern/UpdClient/docs/HARDWARE_TEST_PLAN.md`, which is missing from UpdClient `ad83582` and present in its history at `0f96753`.
+- Not built: the GUI for it (connect, discovery, connection badge, reconnect, cancelling a blocked transfer from Transfers) and the memory viewer and editor.
 
 ## M2 status
 
@@ -111,7 +122,7 @@ The biggest risk is that the FATX write path has never touched a real console dr
 - **Real hardware untested.** All FATX work ran on images and loop devices. Dates written by a console may show odd seconds, because the fork stores FAT time seconds without halving them.
 - **Replace is not power-loss safe.** The data is staged first, but the final in-place overwrite is a single unprotected pass. Staging needs host temp space equal to the new file, up to 4 GiB.
 - **Shrinking a file via Replace is one-way.** The freed tail clusters are gone, so a later replacement can only be as large as the shrunken file. Emptying a file frees all its clusters, including its start cluster.
-- **A misleading build flag.** `UNNAMED_WITH_XBDM` defaults to ON, but no XBDM code exists yet. It does nothing today.
+- **XBDM has only met a mock.** The client, the mock and the backend follow a contract written from third-party clients. Error codes, sizes without `sizehi`, the connection limit and uploads near 4 GiB may differ on a console.
 - **Licensing is unsettled.** gxbuild3 is GPLv2 and cannot be linked in. XexTool's repo has no licence file. The status bar and drawer are modelled on Genexis's QML, which is GPLv2.
 - **Drive access exists only on Linux.** Windows needs an elevated helper and macOS needs `authopen`; neither is written. The fork also uses POSIX types, so it likely will not build with MSVC.
 - **CI has never run.** The workflow is written, but the MSVC, Apple and Arch jobs are unverified.
@@ -119,16 +130,17 @@ The biggest risk is that the FATX write path has never touched a real console dr
 
 ## Next steps
 
-M2, the XEX tools, is built and reviewed; M3 is next.
+M2, the XEX tools, is built and reviewed; M3 has its core file backend.
 
 1. **M2 XEX.** Built (see M2 status). Left: try real titles, fix in-place edits on Windows, and let quitting not wait for a running XexTool call.
-2. **M3 XBDM.** Write the protocol client against a mock server so it can be tested without a console, then the file backend (list, transfer, new folder, delete), then the hex memory viewer and editor, which opens read-only.
+2. **M3 XBDM.** The protocol client (UpdClient) and the file backend are built against the mock. Left: the GUI (connect, discovery, connection state, reconnect, cancel wired to the backend), the hex memory viewer and editor, which opens read-only, and the hardware checklist.
 3. **M4 STFS.** Starts once the STFS files are relicensed or a clean-room version is chosen.
 4. **M5 packaging.** Windows and macOS drive access, then installers for each platform and CI that builds the app on all of them.
 
 **Only you can do**
 
 - [ ] Try the FATX features on a real console drive, ideally a spare one or a copy.
+- [ ] Run UpdClient's XBDM hardware checklist (`docs/HARDWARE_TEST_PLAN.md`; missing from `ad83582`, in UpdClient's history at `0f96753`) on the targets you have, then the app's XBDM backend once the GUI offers it.
 - [ ] Choose the gxbuild3 route and ask erorn about the STFS files.
 - [ ] Confirm the XexTool licence, and that of XeCrypt and libLZX.
 - [ ] Give push access to `ExposureMG/XexTool` so M2 can begin.

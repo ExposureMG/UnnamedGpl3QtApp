@@ -304,6 +304,98 @@ unlocked; format needs type-to-confirm.
   real Windows, where the no-replace move (`MoveFileExW`) and the
   device-name checks matter. The GUI writes new files to host paths only
 
+### M3 status (XBDM)
+
+Everything below has run only against UpdClient's mock console. No console
+or emulator has been connected.
+
+- [x] Protocol client: UpdClient's `updclient_lib` (`extern/UpdClient`,
+  ExposureMG/UpdClient `main` at `ad83582`), written with its mock console
+  from the contract in `extern/UpdClient/docs/XBDM_PROTOCOL.md`.
+  `UNNAMED_WITH_XBDM` (ON by default) builds it into the core without its
+  command line tool, tests, install rules and warning flags; a clone
+  without that submodule configures without XBDM, with a message. Offline:
+  `-DFETCHCONTENT_FULLY_DISCONNECTED=ON` with
+  `FETCHCONTENT_SOURCE_DIR_SPDLOG`/`_EXPECTED`, or
+  `-DUPDCLIENT_USE_SYSTEM_DEPS=ON`
+- [x] File backend (`XbdmFileSystem`, registry kind `XBDM`, whose path is
+  `host` or `host:port`): the console's drives are the top-level folders
+  (`/HDD/a` is `HDD:\a`, mapped with the library's `path.hpp`). List, stat,
+  details (attributes, FILETIME times read as UTC, 64-bit sizes, a size the
+  console did not send shown as unknown), the console's details (name,
+  type, id, execution state, running title, title address, free space per
+  drive), extract, inject, replace, new folder, rename (a change of case
+  only goes through a temporary name), delete, clear. Names the app creates
+  follow FATX rules (ASCII letters, digits, spaces and `! # $ % & ' ( ) - .
+  @ [ ] ^ _ \` { } ~`, at most 42 characters) and are refused, with the
+  reason, before anything is sent; so are sizes of 4 GiB or more (XBDM's
+  lengths have 32 bits) and, from the console's free space, uploads that do
+  not fit. Uploads go to a temporary name and are renamed in `finish()`; of
+  unknown size they are staged on the host (in memory up to 16 MiB, then a
+  temporary file). An abandoned or dropped upload is deleted over a new
+  connection, or listed as left over (`leftoverFiles()`, and in the
+  console's details); after a failed replace the upload, then the only
+  copy, is kept and named in the error. Folders are deleted by the client
+  after their whole tree was listed: nothing is deleted when it is nested
+  deeper than 32 levels, holds more than 100,000 entries or an entry whose
+  name cannot be sent back; drives and the root are never deleted or
+  cleared. Entries the library skips (names with separators, `..`, control
+  characters) never reach `copyTree`, so a hostile console cannot make an
+  extract write outside its target
+- [x] Connections: one command connection per place. A call that finds it
+  busy (a listing during a transfer, a copy from the console to itself)
+  opens another one to the same console for its duration, up to
+  `maxConnections` (3); the console's own limit (401) is reported as
+  "connection limit reached". A command whose connection the console
+  dropped while idle is sent again once on a new connection (a second new
+  folder, delete or rename of the same name is refused, so nothing happens
+  twice; file data is never resent). A timeout or an unreachable console
+  puts the place in the Disconnected state (`connectionState()`,
+  `connectionError()`, `onStateChanged`): calls then fail at once until
+  `reconnect()`. `cancel()` ends calls and transfers in progress from any
+  thread. `openClient()` hands out a connection of its own for a memory
+  viewer. `connectXbdm(host, port)` and `discoverConsoles()` (the library's
+  UDP discovery, one search, cancellable) are the API for the GUI
+- [x] `tests/xbdm_tests.cpp` (ctest `xbdm_tests`, built with XBDM only)
+  compiles the library's mock console from `extern/UpdClient/tests/support`
+  and runs every test over an in-memory pipe and over loopback TCP: the
+  `copyTree` matrix between a host folder and the console both ways (trees,
+  empty files and folders, odd names, 300 small files, 64 MiB), console to
+  console, unknown sizes, cancel from the progress callback and from another
+  thread, drops during uploads, the kept copy after a failed replace, error
+  mapping (not found, exists, access denied, no space, drive not mounted,
+  connection limits, 4 GiB), a listing during a transfer, reconnects after
+  drops, an unreachable and a silent console, hostile names and drive
+  names, delete limits, discovery with cancel, the registry kind.
+  `UNNAMED_XBDM_HUGE=1` adds 4 GiB - 1 each way (run once, passes). Clean
+  with `-Wall -Wextra -Wpedantic` on GCC 16 and clang 23, under ASan/UBSan
+  and TSan; the core with XBDM cross-compiles with MinGW, warning-free
+  (not run under Wine: the sandbox of that session refused wineserver).
+  The app builds with XBDM on and off
+- [ ] GUI: *Connect to Console…* with discovery, a connection badge and
+  *Reconnect*, and the Transfers cancel wired to `XbdmFileSystem::cancel()`
+  (today a cancel acts between the 1 MiB pieces of a copy, or when a
+  stalled console times out)
+- [ ] Memory viewer and editor (read-only first), on `openClient()`
+- [ ] Verified on hardware: devkits (XDKBuild, RGLoader), a retail console
+  with Glitch2 and an XBDM plugin, Xenia, Xenon, one protocol for all. The
+  checklist is `extern/UpdClient/docs/HARDWARE_TEST_PLAN.md`; it is not in
+  UpdClient `ad83582` (the merge left it and `ARCHITECTURE.md` out, which
+  the README still links), but it is in that repo's history at `0f96753`
+
+#### M3 notes
+
+- Library gaps found while building on it, for UpdClient's owner: the
+  public headers live under `include/core/`, `include/net/`, ... without a
+  project prefix, beside the app's own `include/core/` (no file clashes
+  today); `FileWriter::finish()` always replaces, so a file created by
+  someone else between the app's check and the rename is deleted (no
+  "do not replace" mode); whether a failed replace kept the upload is only
+  in the error's text; a dropped idle connection cannot be told apart from
+  one dropped mid-command; `XbdmDiscovery` cannot be cancelled except
+  through the socket factory; `XbdmClient::rename()` cannot change only
+  the case of a name.
+
 ## Risks
 
 - **Raw-device safety.** FATX writes and format can destroy a console drive:
@@ -314,6 +406,9 @@ unlocked; format needs type-to-confirm.
 - **Untrusted input.** STFS/XEX parsers read hostile files: bounds checks, sanitizer
   CI, fuzzing.
 - **Live memory writes** can crash a console: the memory editor starts read-only.
+- **XBDM is untested on hardware.** The client, its mock and the backend
+  follow a contract written from third-party clients; a console may answer
+  differently (sizes, error codes, connection limits, uploads of 4 GiB).
 - **Fork changes.** Library targets for FATX and XexTool need patches in the
   ExposureMG forks (FATX: a FUSE-free target and a replacement for its 189
   `console::write` calls; XexTool: everything except `main.cpp` as a library).
