@@ -11,3 +11,12 @@
 [submodule "extern/FATX"]
 	path = extern/FATX
 	url = https://github.com/ExposureMG/FATX
+[submodule "extern/curl"]
+	path = extern/curl
+	url = https://github.com/curl/curl
+[submodule "extern/mbedtls"]
+	path = extern/mbedtls
+	url = https://github.com/Mbed-TLS/mbedtls
+[submodule "extern/UpdClient"]
+	path = extern/UpdClient
+	url = https://github.com/ExposureMG/UpdClient
