@@ -4,14 +4,14 @@
 
 ## Status
 
-Two of six milestones are done: the app browses, extracts, writes and replaces files on FATX images and, on Linux, on drives. The XEX tools (M2) are built and reviewed on Linux. For XBDM (M3) the core has a console backend, tested only against a mock console; the GUI does not offer it yet. Nothing exists for STFS, and none of it has been tried on a real console, a console drive or real titles.
+Two of six milestones are done: the app browses, extracts, writes and replaces files on FATX images and, on Linux, on drives. The XEX tools (M2) are built and reviewed on Linux. For XBDM (M3) the core has a console backend and the GUI connects to consoles, both tested only against a mock console. Nothing exists for STFS, and none of it has been tried on a real console, a console drive or real titles.
 
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | M0 | Foundations: streams, generic copy, async jobs, folder and rename operations, feature flags | Done |
 | M1 | FATX: browse, write, in-place replace, format, check and repair, drives on Linux | Done on Linux; not tried on a real drive |
 | M2 | XEX: info, extract, decrypt and encrypt, compress and decompress, patch, sign | Built on Linux; matches the command line; not tried with real titles |
-| M3 | XBDM: file transfer, memory viewer and editor | Core file backend built on UpdClient, tested against its mock only; GUI and memory viewer not started; not tried on any console |
+| M3 | XBDM: file transfer, memory viewer and editor | File backend on UpdClient and its GUI, tested against UpdClient's mock only; memory viewer not started; not tried on any console |
 | M4 | STFS: create, inject, extract, delete | Blocked on relicensing or a clean-room version |
 | M5 | Packaging and CI for Linux, Windows, macOS, Android | Not started |
 
@@ -24,7 +24,8 @@ M3 is on the app's `m3-xbdm` branch. The XBDM protocol client is UpdClient (`ext
 - One command connection per place, a second one on demand while a transfer runs, `reconnect()`, a Connected or Disconnected state, `cancel()` from any thread, `connectXbdm()`, `discoverConsoles()`, the registry kind `XBDM`, and `openClient()` for a future memory viewer. `docs/ROADMAP.md` (M3 status) has the details.
 - `xbdm_tests` runs it against UpdClient's mock console over an in-memory pipe and loopback TCP, including cancels, drops, reconnects, connection limits and hostile names; 4 GiB - 1 each way on request.
 - Verified only against that mock. Every real target is unverified: devkits running XDKBuild or RGLoader, a retail console running Glitch2 with an XBDM plugin, Xenia and Xenon. The checklist for them is `extern/UpdClient/docs/HARDWARE_TEST_PLAN.md`, which is missing from UpdClient `ad83582` and present in its history at `0f96753`.
-- Not built: the GUI for it (connect, discovery, connection badge, reconnect, cancelling a blocked transfer from Transfers) and the memory viewer and editor.
+- GUI: *Connect to Console…* with an address, a search of the network and saved consoles; a console is a place with a connected or disconnected badge whose drives are folders, and every file action works on it as on any place. Cancel in Transfers interrupts a blocked call at once; a lost console offers *Reconnect* on the next action and keeps its place; closing says `bye`. Driven headless through the real QML against the mock, killed and restarted mid-upload included (`docs/ROADMAP.md`, M3 status).
+- Not built: *Run on Console* (it does not fit File Tools, which do not know where a file lives) and the memory viewer and editor.
 
 ## M2 status
 
@@ -133,14 +134,14 @@ The biggest risk is that the FATX write path has never touched a real console dr
 M2, the XEX tools, is built and reviewed; M3 has its core file backend.
 
 1. **M2 XEX.** Built (see M2 status). Left: try real titles, fix in-place edits on Windows, and let quitting not wait for a running XexTool call.
-2. **M3 XBDM.** The protocol client (UpdClient) and the file backend are built against the mock. Left: the GUI (connect, discovery, connection state, reconnect, cancel wired to the backend), the hex memory viewer and editor, which opens read-only, and the hardware checklist.
+2. **M3 XBDM.** The protocol client (UpdClient) and the file backend are built against the mock. The GUI is built against the mock. Left: the hex memory viewer and editor, which opens read-only, launching a xex on the console, and the hardware checklist.
 3. **M4 STFS.** Starts once the STFS files are relicensed or a clean-room version is chosen.
 4. **M5 packaging.** Windows and macOS drive access, then installers for each platform and CI that builds the app on all of them.
 
 **Only you can do**
 
 - [ ] Try the FATX features on a real console drive, ideally a spare one or a copy.
-- [ ] Run UpdClient's XBDM hardware checklist (`docs/HARDWARE_TEST_PLAN.md`; missing from `ad83582`, in UpdClient's history at `0f96753`) on the targets you have, then the app's XBDM backend once the GUI offers it.
+- [ ] Run UpdClient's XBDM hardware checklist (`docs/HARDWARE_TEST_PLAN.md`; missing from `ad83582`, in UpdClient's history at `0f96753`) on the targets you have, then the app's *Connect to Console…* on them.
 - [ ] Choose the gxbuild3 route and ask erorn about the STFS files.
 - [ ] Confirm the XexTool licence, and that of XeCrypt and libLZX.
 - [ ] Give push access to `ExposureMG/XexTool` so M2 can begin.
@@ -170,3 +171,5 @@ The code is safe in git, but the working environment is not, so expect to rebuil
 - A layout nested in a layout fills both directions by default. Set `Layout.fillWidth` and `Layout.fillHeight` explicitly.
 - In Kirigami's page row, a page's width comes from its `implicitWidth`, not an attached property.
 - Parallel test runs must not share one scratch folder.
+- A place's last reference must not be dropped on its own worker thread: its `QThreadPool` would wait for itself forever. `closeMount()` hands the place to `retire()`, which lets it go on another thread once its worker is done.
+- Run headless with `QT_FORCE_STDERR_LOGGING=1`, or Qt's warnings (QML errors included) go to the journal instead of the terminal.

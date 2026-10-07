@@ -372,10 +372,37 @@ or emulator has been connected.
   and TSan; the core with XBDM cross-compiles with MinGW, warning-free
   (not run under Wine: the sandbox of that session refused wineserver).
   The app builds with XBDM on and off
-- [ ] GUI: *Connect to Console…* with discovery, a connection badge and
-  *Reconnect*, and the Transfers cancel wired to `XbdmFileSystem::cancel()`
-  (today a cancel acts between the 1 MiB pieces of a copy, or when a
-  stalled console times out)
+- [x] GUI, checked against the mock only. *Connect to Console…* (Open
+  menu and Places): address and port (730), the consoles that answer a
+  search of the network (in the background, with Stop and Search Again; a
+  console that does not answer is opened by its address), the consoles
+  reached before (in the settings, each can be forgotten), and why a
+  connection failed (refused, unreachable, timed out, connection limit). A
+  console is a place (kind `XBDM`) named after its debug name, with its
+  type and address as subtitle and a connected or disconnected badge; its
+  drives are the root folders. Browsing, details (the console and each
+  drive's free space on the Filesystem tab), extract, add files and folders
+  (also by drag and drop), new folder, rename and delete take the same
+  capability-driven paths as every other place. Cancel in Transfers ends a
+  call blocked on the network at once (`XbdmFileSystem::cancel()`, for the
+  job being cancelled only). When the console cannot be reached the place
+  shows *Not connected*, running jobs fail with the reason, and the next
+  action on it offers *Reconnect* (also in the place's menu); the place
+  keeps its position and folder. Closing a place ends its transfers at once
+  and says `bye` on an idle connection. Driven headless through the real
+  QML against the mock console, run as a separate process on a fixed
+  loopback port so it could be killed and started again (screenshots
+  read): the search and Stop, refused, connection limit and unreachable,
+  connect, browse, details, a folder dropped onto the view, a download, new
+  folder, rename, delete, a refused name, a stalled download and a stalled
+  upload cancelled (both in under 50 ms, nothing left on either side), the
+  console killed mid-upload, the offer to reconnect, reconnecting while it
+  is down and once it is back, closing during a transfer and closing an
+  idle place (`bye`), the saved console forgotten, a 400-pixel-wide window.
+  *Run on Console* (launch a xex with `magicboot`) is not built: file tools
+  read a file as a stream wherever it lives and do not know their place,
+  so launching belongs with a console's own actions (with the memory
+  viewer), not in File Tools
 - [ ] Memory viewer and editor (read-only first), on `openClient()`
 - [ ] Verified on hardware: devkits (XDKBuild, RGLoader), a retail console
   with Glitch2 and an XBDM plugin, Xenia, Xenon, one protocol for all. The
@@ -395,6 +422,17 @@ or emulator has been connected.
   one dropped mid-command; `XbdmDiscovery` cannot be cancelled except
   through the socket factory; `XbdmClient::rename()` cannot change only
   the case of a name.
+- The GUI's search sends to 255.255.255.255:730. `FileBrowser::setDiscoveryTarget()`
+  (C++ only) points it elsewhere, as the headless check does for the mock's
+  UDP responder; a found console is always offered on TCP port 730, which
+  the library assumes.
+- A place reached over a connection is updated from the backend's
+  `onStateChanged`, which fires only when a call notices (XBDM has no
+  keepalive): a console that went away while idle shows as connected until
+  the next action, which then offers to reconnect.
+- Selecting a file on a console reads its first 4 KiB for the file tools;
+  XBDM cannot stop a download early, so each such read closes that
+  connection, which the next call opens again.
 
 ## Risks
 
