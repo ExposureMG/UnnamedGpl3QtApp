@@ -596,11 +596,13 @@ void dropMidUpload(Link link) {
     writeBytes(dir / "up.bin", ut::patternBytes(4u << 20, 8));
 
     // in memory the client's next write fails; over TCP the mock's half-closed
-    // socket stops taking data, and the write times out
+    // socket stops taking data, and the write times out, or, when the
+    // system reports the closed socket first (broken pipe), fails as lost
     rig.mock.inject(XbdmFault::dropUploadAfterBytes(100000).on("sendfile"));
     const Status st = copyTree(host, "/up.bin", *console, "/HDD/Content/up.bin");
     CHECK(!st && !st.cancelled);
-    CHECK(st.message.find(link == Link::Memory ? "was lost" : "stopped responding") != std::string::npos);
+    CHECK(st.message.find("was lost") != std::string::npos ||
+          (link == Link::Tcp && st.message.find("stopped responding") != std::string::npos));
     CHECK(!rig.mock.entry("HDD:\\Content\\up.bin"));
     CHECK(partFilesBelow(rig.mock, "HDD:\\").empty());
     CHECK(console->leftoverFiles().empty());
