@@ -5,6 +5,9 @@
 #ifdef UNNAMED_WITH_FATX
 #include "core/FatxFileSystem.hpp"
 #endif
+#ifdef UNNAMED_WITH_XBDM
+#include "core/XbdmFileSystem.hpp"
+#endif
 
 #include <algorithm>
 #include <system_error>
@@ -45,6 +48,32 @@ FileSystemRegistry FileSystemRegistry::withBuiltins() {
         if (chosen == partitions.end())
             chosen = partitions.begin();
         auto fs = openFatx(device.value(), *chosen, false, pathToUtf8(path.filename()));
+        if (!fs) {
+            error = fs.status().message;
+            return nullptr;
+        }
+        return std::move(fs.value());
+    });
+#endif
+#ifdef UNNAMED_WITH_XBDM
+    // A console over XBDM; the path is its address, "host" or "host:port".
+    registry.add("XBDM", [](const std::filesystem::path& path, std::string& error) -> std::unique_ptr<FileSystem> {
+        std::string host = pathToUtf8(path);
+        std::uint16_t port = updclient::xbdm::kXbdmPort;
+        if (const auto colon = host.rfind(':'); colon != std::string::npos) {
+            const std::string digits = host.substr(colon + 1);
+            unsigned long value = 0;
+            const bool ok = !digits.empty() && digits.size() <= 5 &&
+                            std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; }) &&
+                            (value = std::stoul(digits)) > 0 && value <= 0xFFFF;
+            if (!ok) {
+                error = "Invalid console address: " + host;
+                return nullptr;
+            }
+            port = static_cast<std::uint16_t>(value);
+            host.resize(colon);
+        }
+        auto fs = connectXbdm(host, port);
         if (!fs) {
             error = fs.status().message;
             return nullptr;

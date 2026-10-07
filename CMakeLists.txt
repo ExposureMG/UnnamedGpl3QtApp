@@ -116,6 +116,10 @@ if(UNNAMED_WITH_XBDM)
     set(UPDCLIENT_INSTALL OFF)
     set(UPDCLIENT_WARNINGS OFF)
     add_subdirectory(extern/UpdClient EXCLUDE_FROM_ALL)
+    target_sources(unnamed_core PRIVATE
+        include/core/XbdmFileSystem.hpp
+        src/core/XbdmFileSystem.cpp
+    )
     target_link_libraries(unnamed_core PUBLIC UpdClient::updclient_lib)
     target_compile_definitions(unnamed_core PUBLIC UNNAMED_WITH_XBDM=1)
 endif()
