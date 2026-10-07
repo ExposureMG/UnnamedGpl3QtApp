@@ -1,5 +1,6 @@
 #include "core/LocalFileSystem.hpp"
 #include "core/Format.hpp"
+#include "core/FormatHandler.hpp"
 #include "core/PathUtil.hpp"
 
 #include <chrono>
@@ -36,6 +37,19 @@ std::string permissionString(fs::perms p) {
     out += bit(fs::perms::others_exec, 'x');
     return out;
 }
+
+#ifdef _WIN32
+// Windows changes or reroutes some names: "a." opens "a", "..." and " " the
+// folder they are in, NUL.txt the null device. A path holding one is refused,
+// so that nothing lands under another name.
+Status checkWindowsNames(const fs::path& relative) {
+    for (const auto& part : relative) {
+        if (const Status st = checkPlainName(pathToUtf8(part)); !st)
+            return Status::failure(st.message + " on Windows");
+    }
+    return Status::success();
+}
+#endif
 } // namespace
 
 LocalFileSystem::LocalFileSystem(fs::path root) : m_root(root.lexically_normal()) {}
@@ -53,20 +67,24 @@ std::optional<fs::path> LocalFileSystem::hostPath(const std::string& path) const
     return out;
 }
 
-bool LocalFileSystem::resolve(const std::string& path, fs::path& out) const {
+Status LocalFileSystem::resolve(const std::string& path, fs::path& out) const {
     const fs::path relative = pathFromUtf8(path).relative_path().lexically_normal();
     for (const auto& part : relative) {
         if (part == "..")
-            return false;
+            return Status::failure("Invalid path: " + path);
     }
+#ifdef _WIN32
+    if (const Status st = checkWindowsNames(relative); !st)
+        return Status::failure("Invalid path: " + path + ": " + st.message);
+#endif
     out = relative.empty() ? m_root : (m_root / relative).lexically_normal();
-    return true;
+    return Status::success();
 }
 
 Status LocalFileSystem::list(const std::string& path, std::vector<Entry>& out) const {
     fs::path dir;
-    if (!resolve(path, dir))
-        return Status::failure("Invalid path: " + path);
+    if (const Status st = resolve(path, dir); !st)
+        return st;
 
     std::error_code ec;
     out.clear();
@@ -93,8 +111,8 @@ Status LocalFileSystem::list(const std::string& path, std::vector<Entry>& out) c
 
 Status LocalFileSystem::describe(const std::string& path, Details& out) const {
     fs::path target;
-    if (!resolve(path, target))
-        return Status::failure("Invalid path: " + path);
+    if (const Status st = resolve(path, target); !st)
+        return st;
 
     std::error_code ec;
     const auto status = fs::status(target, ec);
@@ -155,8 +173,8 @@ Status LocalFileSystem::describeFileSystem(Details& out) const {
 
 Status LocalFileSystem::stat(const std::string& path, Entry& out) const {
     fs::path target;
-    if (!resolve(path, target))
-        return Status::failure("Invalid path: " + path);
+    if (const Status st = resolve(path, target); !st)
+        return st;
     std::error_code ec;
     const auto status = fs::status(target, ec);
     if (ec || !fs::exists(status))
@@ -179,8 +197,8 @@ Status LocalFileSystem::stat(const std::string& path, Entry& out) const {
 
 Result<std::unique_ptr<ByteSource>> LocalFileSystem::openRead(const std::string& path) const {
     fs::path target;
-    if (!resolve(path, target))
-        return Status::failure("Invalid path: " + path);
+    if (const Status st = resolve(path, target); !st)
+        return st;
     return openFileSource(target);
 }
 
@@ -188,14 +206,18 @@ Result<std::unique_ptr<ByteSink>> LocalFileSystem::openWrite(const std::string& 
                                                              std::optional<std::uint64_t>,
                                                              bool overwrite) {
     fs::path target;
-    if (!resolve(path, target) || target == m_root)
+    if (const Status st = resolve(path, target); !st)
+        return st;
+    if (target == m_root)
         return Status::failure("Invalid path: " + path);
     return openFileSink(target, overwrite);
 }
 
 Status LocalFileSystem::makeDirectory(const std::string& path) {
     fs::path target;
-    if (!resolve(path, target) || target == m_root)
+    if (const Status st = resolve(path, target); !st)
+        return st;
+    if (target == m_root)
         return Status::failure("Invalid path: " + path);
     std::error_code ec;
     if (fs::exists(target, ec))
@@ -206,11 +228,17 @@ Status LocalFileSystem::makeDirectory(const std::string& path) {
 
 Status LocalFileSystem::rename(const std::string& path, const std::string& newName) {
     fs::path source;
-    if (!resolve(path, source) || source == m_root)
+    if (const Status st = resolve(path, source); !st)
+        return st;
+    if (source == m_root)
         return Status::failure("Invalid path: " + path);
     if (newName.empty() || newName == "." || newName == ".." ||
         newName.find('/') != std::string::npos || newName.find('\\') != std::string::npos)
         return Status::failure("Invalid name: " + newName);
+#ifdef _WIN32
+    if (const Status st = checkPlainName(newName); !st)
+        return Status::failure(st.message + " on Windows");
+#endif
 
     const fs::path target = source.parent_path() / pathFromUtf8(newName);
     std::error_code ec;
@@ -222,7 +250,9 @@ Status LocalFileSystem::rename(const std::string& path, const std::string& newNa
 
 Status LocalFileSystem::remove(const std::string& path) {
     fs::path target;
-    if (!resolve(path, target) || target == m_root)
+    if (const Status st = resolve(path, target); !st)
+        return st;
+    if (target == m_root)
         return Status::failure("Invalid path: " + path);
     std::error_code ec;
     fs::remove_all(target, ec);

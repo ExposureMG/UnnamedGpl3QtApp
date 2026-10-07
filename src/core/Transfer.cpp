@@ -18,19 +18,35 @@ struct Copier {
 
     bool report() { return !options.progress || options.progress(progress); }
 
-    // Total bytes below `path`, for a determinate progress bar.
-    std::uint64_t measure(const std::string& path, const Entry& entry, int depth) {
-        if (entry.type == EntryType::File)
-            return entry.size;
+    // Adds the bytes below `path` to `total`, for a determinate progress bar.
+    // A folder that cannot be listed counts as empty; only a cancel fails.
+    // Each level's listing is let go before its folders are walked.
+    Status measure(const std::string& path, const Entry& entry, int depth, std::uint64_t& total) {
+        if (entry.type == EntryType::File) {
+            total += entry.size;
+            return Status::success();
+        }
         if (depth > kMaxDepth)
-            return 0;
-        std::vector<Entry> children;
-        if (!source.list(path, children))
-            return 0;
-        std::uint64_t total = 0;
-        for (const Entry& child : children)
-            total += measure(joinPath(path, child.name), child, depth + 1);
-        return total;
+            return Status::success();
+        if (!report())
+            return Status::cancelledByUser();
+        std::vector<Entry> folders;
+        {
+            std::vector<Entry> children;
+            if (const Status st = source.list(path, children); !st)
+                return st.cancelled ? st : Status::success();
+            for (Entry& child : children) {
+                if (child.type == EntryType::File)
+                    total += child.size;
+                else
+                    folders.push_back(std::move(child));
+            }
+        }
+        for (const Entry& folder : folders) {
+            if (const Status st = measure(joinPath(path, folder.name), folder, depth + 1, total); !st)
+                return st;
+        }
+        return Status::success();
     }
 
     Status copyFile(const std::string& from, const std::string& to) {
@@ -59,11 +75,15 @@ struct Copier {
         return report() ? Status::success() : Status::cancelledByUser();
     }
 
+    // A folder's files first, then its folders, from a listing that holds the
+    // folders only.
     Status copy(const std::string& from, const std::string& to, const Entry& entry, int depth) {
         if (entry.type == EntryType::File)
             return copyFile(from, to);
         if (depth > kMaxDepth)
             return Status::failure("Folder nesting too deep: " + from);
+        if (!report())
+            return Status::cancelledByUser();
 
         Entry existing;
         if (destination.stat(to, existing)) {
@@ -73,11 +93,21 @@ struct Copier {
             return st;
         }
 
-        std::vector<Entry> children;
-        if (const Status st = source.list(from, children); !st)
-            return st;
-        for (const Entry& child : children) {
-            if (const Status st = copy(joinPath(from, child.name), joinPath(to, child.name), child, depth + 1); !st)
+        std::vector<Entry> folders;
+        {
+            std::vector<Entry> children;
+            if (const Status st = source.list(from, children); !st)
+                return st;
+            for (Entry& child : children) {
+                if (child.type != EntryType::File) {
+                    folders.push_back(std::move(child));
+                } else if (const Status st = copyFile(joinPath(from, child.name), joinPath(to, child.name)); !st) {
+                    return st;
+                }
+            }
+        }
+        for (const Entry& folder : folders) {
+            if (const Status st = copy(joinPath(from, folder.name), joinPath(to, folder.name), folder, depth + 1); !st)
                 return st;
         }
         return Status::success();
@@ -93,7 +123,8 @@ Status copyTree(const FileSystem& source, const std::string& sourcePath, FileSys
         return st;
 
     Copier copier{source, destination, options, {}};
-    copier.progress.bytesTotal = copier.measure(sourcePath, entry, 0);
+    if (const Status st = copier.measure(sourcePath, entry, 0, copier.progress.bytesTotal); !st)
+        return st;
     if (!copier.report())
         return Status::cancelledByUser();
     return copier.copy(sourcePath, destinationPath, entry, 0);

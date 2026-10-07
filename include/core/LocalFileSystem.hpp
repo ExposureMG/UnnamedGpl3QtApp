@@ -5,7 +5,8 @@
 namespace unnamed::core {
 
 // A directory on the host exposed as a FileSystem. Virtual paths cannot escape
-// `root`.
+// `root`. On Windows, paths with a name Windows would change (a trailing dot
+// or space) or open as a device (CON, NUL.txt, COM1, ...) are refused.
 class LocalFileSystem final : public FileSystem {
 public:
     explicit LocalFileSystem(std::filesystem::path root);
@@ -27,8 +28,8 @@ public:
     Status remove(const std::string& path) override;
 
 private:
-    // Maps a virtual path to a host path; false if it would escape the root.
-    bool resolve(const std::string& path, std::filesystem::path& out) const;
+    // Maps a virtual path to a host path; fails if it would escape the root.
+    Status resolve(const std::string& path, std::filesystem::path& out) const;
 
     std::filesystem::path m_root;
 };

@@ -13,6 +13,7 @@
 #include <unistd.h>
 #endif
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <iterator>
 
@@ -278,6 +279,112 @@ void testDescriptors() {
     CHECK(expandSuggestedName("{name}.txt", "default.xex") == "default.xex.txt");
     CHECK(expandSuggestedName("{stem}-x", ".hidden") == ".hidden-x");
     CHECK(expandSuggestedName("{stem}", "noext") == "noext");
+}
+
+// A host folder that counts its listings and new folders, and can fail its
+// listings as cancelled.
+class CountingFileSystem final : public FileSystem {
+public:
+    explicit CountingFileSystem(const fs::path& root) : m_inner(root) {}
+
+    std::string name() const override { return "Counting"; }
+    Capability capabilities() const override { return m_inner.capabilities(); }
+    Status list(const std::string& path, std::vector<Entry>& out) const override {
+        ++lists;
+        if (cancelListsAfter >= 0 && lists > cancelListsAfter)
+            return Status::cancelledByUser();
+        return m_inner.list(path, out);
+    }
+    Status stat(const std::string& path, Entry& out) const override { return m_inner.stat(path, out); }
+    Result<std::unique_ptr<ByteSource>> openRead(const std::string& path) const override {
+        return m_inner.openRead(path);
+    }
+    Result<std::unique_ptr<ByteSink>> openWrite(const std::string& path, std::optional<std::uint64_t> size,
+                                                bool overwrite) override {
+        return m_inner.openWrite(path, size, overwrite);
+    }
+    Status makeDirectory(const std::string& path) override {
+        ++folders;
+        if (onMakeDirectory)
+            onMakeDirectory();
+        return m_inner.makeDirectory(path);
+    }
+
+    mutable int lists = 0;
+    int cancelListsAfter = -1;
+    int folders = 0;
+    std::function<void()> onMakeDirectory;
+
+private:
+    LocalFileSystem m_inner;
+};
+
+// A cancel stops copyTree while it sizes a tree or creates its folders, not
+// after it walked all of it.
+void testCopyTreeCancel(const fs::path& root) {
+    for (const char* a : {"0", "1", "2", "3"})
+        for (const char* b : {"0", "1", "2", "3"})
+            for (const char* c : {"0", "1", "2", "3"})
+                fs::create_directories(root / "folders" / a / b / c);
+    fs::create_directories(root / "copies");
+    CountingFileSystem source(root);
+    CountingFileSystem destination(root / "copies");
+
+    TransferOptions never;
+    never.progress = [](const TransferProgress&) { return false; };
+    Status st = copyTree(source, "/folders", destination, "/folders", never);
+    CHECK(!st && st.cancelled);
+    CHECK(source.lists <= 1);
+    CHECK(destination.folders == 0);
+
+    // folders only, no file whose bytes would report progress
+    bool stopNow = false;
+    TransferOptions later;
+    later.progress = [&](const TransferProgress&) { return !stopNow; };
+    destination.onMakeDirectory = [&] { stopNow = destination.folders == 3; };
+    st = copyTree(source, "/folders", destination, "/folders", later);
+    CHECK(!st && st.cancelled);
+    CHECK(destination.folders == 3);
+    destination.onMakeDirectory = nullptr;
+
+    // a listing that fails as cancelled ends the sizing pass
+    source.lists = 0;
+    source.cancelListsAfter = 2;
+    st = copyTree(source, "/folders", destination, "/folders");
+    CHECK(!st && st.cancelled);
+    CHECK(source.lists == 3);
+    fs::remove_all(root / "folders");
+    fs::remove_all(root / "copies");
+}
+
+// Names that Windows changes ("a." is "a", "..." the folder itself) or opens
+// as a device are refused there; elsewhere they are ordinary names.
+void testHostNames(const fs::path& root) {
+    fs::create_directories(root / "names" / "folders");
+    fs::create_directories(root / "names" / "files");
+    std::ofstream(root / "names" / "files" / "plain") << "x";
+    LocalFileSystem folders(root / "names" / "folders");
+    LocalFileSystem files(root / "names" / "files");
+    for (const std::string name : {"...", " ", "a.", "b ", "CON", "aux", "nul.txt", "COM1.bin", "lpt9"}) {
+        const Status folder = folders.makeDirectory("/" + name);
+        auto sink = files.openWrite("/" + name, 1, false);
+        if (sink) {
+            CHECK(sink.value()->write("x", 1));
+            CHECK(sink.value()->finish());
+        }
+#ifdef _WIN32
+        CHECK(!folder && folder.message.find("on Windows") != std::string::npos);
+        CHECK(!sink && sink.status().message.find("on Windows") != std::string::npos);
+        CHECK(!files.rename("/plain", name));
+#else
+        CHECK(folder);
+        CHECK(sink);
+#endif
+    }
+#ifdef _WIN32
+    CHECK(fs::is_empty(root / "names" / "folders"));
+#endif
+    fs::remove_all(root / "names");
 }
 
 // Host file sinks stage into a file of their own and never touch the user's.
@@ -765,6 +872,8 @@ int main() {
     testChecksums();
     testFileSinks(root);
     testFormatHandlers(root);
+    testCopyTreeCancel(root);
+    testHostNames(root);
 
     fs::remove_all(root);
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
