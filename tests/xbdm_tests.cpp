@@ -280,6 +280,7 @@ void capabilityFlags(Link link) {
     for (Capability c : {Capability::Format, Capability::HealthCheck, Capability::Repair})
         CHECK(!hasCapability(caps, c));
     CHECK(fs->name() == "MockDevkit");
+    CHECK(fs->consoleType() == "devkit");
     CHECK(fs->connectionState() == XbdmConnectionState::Connected);
     CHECK(fs->connectionError().empty());
 
@@ -1060,7 +1061,7 @@ void registryKind() {
     CHECK_OK(direct.status());
     mock.stop();
     auto refused = connectXbdm("127.0.0.1", *port);
-    CHECK_FAILS(refused.status(), "Cannot connect to 127.0.0.1:");
+    CHECK_FAILS(refused.status(), "Cannot connect: cannot reach 127.0.0.1:");
 }
 
 // 4 GiB - 1 each way, the most a getfile length can carry; slow, so only

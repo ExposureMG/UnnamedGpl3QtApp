@@ -117,6 +117,9 @@ public:
     std::string connectionError() const;
     // "host:port"; with a connector and no host, "console".
     std::string address() const;
+    // The console's type as it answered at connect ("devkit", ...); empty
+    // when it did not.
+    std::string consoleType() const;
     // Connections this place holds now (the console may have closed some).
     std::size_t openConnections() const;
     // Closes the command connection, opens it again and deletes the temporary

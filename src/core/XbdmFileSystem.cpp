@@ -123,6 +123,18 @@ std::string consoleLine(const updclient::Error& e) {
     return at == std::string::npos ? std::string{} : e.message.substr(at + marker.size());
 }
 
+// Why a connect failed ("Connection refused", "timed out after 5000 ms"),
+// without the address the caller names anyway.
+std::string connectReason(const updclient::Error& e) {
+    if (!e.message.starts_with("connect to "))
+        return e.message;
+    if (const auto at = e.message.find(" failed: "); at != std::string::npos)
+        return e.message.substr(at + 9);
+    if (const auto at = e.message.find(" timed out"); at != std::string::npos)
+        return e.message.substr(at + 1);
+    return e.message;
+}
+
 bool lostWhileIdle(const updclient::Error& e) {
     return e.code == ErrorCode::Disconnected || e.code == ErrorCode::NotConnected;
 }
@@ -148,6 +160,7 @@ struct XbdmFileSystem::Impl : std::enable_shared_from_this<XbdmFileSystem::Impl>
     xbdm::XbdmClient::Connector connector;
     std::string name;
     std::string address;
+    std::string type;
 
     mutable std::mutex mutex;
     // slots[0] is the command connection; the others live for one call or
@@ -338,12 +351,14 @@ Status XbdmFileSystem::Impl::failure(const updclient::Error& e, const std::strin
     }
     switch (e.code) {
     case ErrorCode::ConnectFailed: {
-        const std::string reason = "cannot reach " + address + ": " + e.message;
+        const std::string reason = "cannot reach " + address + ": " + connectReason(e);
         setState(XbdmConnectionState::Disconnected, reason);
         return Status::failure(what + ": " + reason);
     }
     case ErrorCode::Timeout: {
-        const std::string reason = name + " stopped responding (" + e.message + ")";
+        const std::string reason = e.message.starts_with("connect to ")
+                                       ? "cannot reach " + address + ": " + connectReason(e)
+                                       : name + " stopped responding (" + e.message + ")";
         setState(XbdmConnectionState::Disconnected, reason);
         return Status::failure(what + ": " + reason);
     }
@@ -887,7 +902,7 @@ Result<std::unique_ptr<XbdmFileSystem>> XbdmFileSystem::connect(XbdmConnectOptio
     primary->primary = true;
     impl->slots.push_back(std::move(primary));
 
-    auto lease = impl->acquire("Cannot connect to " + impl->address);
+    auto lease = impl->acquire("Cannot connect");
     if (!lease)
         return lease.status();
     auto debugName = lease.value().client().debugName();
@@ -895,6 +910,8 @@ Result<std::unique_ptr<XbdmFileSystem>> XbdmFileSystem::connect(XbdmConnectOptio
         impl->name = impl->options.displayName;
     else if (debugName && !debugName->empty())
         impl->name = printable(*debugName);
+    if (auto type = lease.value().client().consoleType())
+        impl->type = printable(*type);
     lease.value().release();
     return std::unique_ptr<XbdmFileSystem>(new XbdmFileSystem(std::move(impl)));
 }
@@ -1321,6 +1338,8 @@ std::string XbdmFileSystem::connectionError() const {
 }
 
 std::string XbdmFileSystem::address() const { return m_impl->address; }
+
+std::string XbdmFileSystem::consoleType() const { return m_impl->type; }
 
 std::size_t XbdmFileSystem::openConnections() const {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
