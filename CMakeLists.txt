@@ -103,6 +103,23 @@ if(UNNAMED_WITH_XEX)
     target_compile_definitions(unnamed_core PUBLIC UNNAMED_WITH_XEX=1)
 endif()
 
+if(UNNAMED_WITH_XBDM)
+    # updclient_lib from UpdClient (C++20): the XBDM protocol client, without
+    # its command line tool, tests and install rules, and with its own warning
+    # flags off. It needs spdlog and tl-expected: fetched by FetchContent, or
+    # offline from -DFETCHCONTENT_SOURCE_DIR_SPDLOG=... and
+    # -DFETCHCONTENT_SOURCE_DIR_EXPECTED=..., or installed ones with
+    # -DUPDCLIENT_USE_SYSTEM_DEPS=ON. Its headers are public: the XBDM API
+    # hands out the library's client for a memory viewer.
+    set(UPDCLIENT_BUILD_CLI OFF)
+    set(UPDCLIENT_BUILD_TESTS OFF)
+    set(UPDCLIENT_INSTALL OFF)
+    set(UPDCLIENT_WARNINGS OFF)
+    add_subdirectory(extern/UpdClient EXCLUDE_FROM_ALL)
+    target_link_libraries(unnamed_core PUBLIC UpdClient::updclient_lib)
+    target_compile_definitions(unnamed_core PUBLIC UNNAMED_WITH_XBDM=1)
+endif()
+
 # --- application: Qt Quick + Kirigami UI -------------------------------------
 if(UNNAMED_BUILD_APP)
     set(CMAKE_AUTOMOC ON)

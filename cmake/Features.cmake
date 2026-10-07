@@ -21,10 +21,18 @@ set(UNNAMED_FEATURES "")
 unnamed_enable_feature(UNNAMED_WITH_FATX extern/FATX     "FATX filesystem (images and drives)")
 unnamed_enable_feature(UNNAMED_WITH_XEX  extern/XexTool  "XEX inspect/decrypt/compress/patch/sign")
 unnamed_enable_feature(UNNAMED_WITH_STFS extern/gxbuild3 "STFS packages (needs gxbuild3 files relicensed, see docs/ROADMAP.md)")
-# XBDM (console over the network) is implemented in-tree, no submodule.
-option(UNNAMED_WITH_XBDM "Xbox debug monitor client (network)" ON)
+# XBDM (a console over the network) uses UpdClient's protocol client in
+# extern/UpdClient. It is ON by default, so a clone without that submodule
+# configures without XBDM instead of failing.
+option(UNNAMED_WITH_XBDM "Xbox debug monitor client (network), through extern/UpdClient" ON)
 if(UNNAMED_WITH_XBDM)
-    list(APPEND UNNAMED_FEATURES UNNAMED_WITH_XBDM)
+    if(EXISTS "${PROJECT_SOURCE_DIR}/extern/UpdClient/CMakeLists.txt")
+        list(APPEND UNNAMED_FEATURES UNNAMED_WITH_XBDM)
+    else()
+        message(STATUS "UNNAMED_WITH_XBDM: extern/UpdClient is empty, building without XBDM. "
+                       "Run: git submodule update --init extern/UpdClient")
+        set(UNNAMED_WITH_XBDM OFF)
+    endif()
 endif()
 
 if(UNNAMED_FEATURES)
