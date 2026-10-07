@@ -115,9 +115,9 @@ public:
     XbdmConnectionState connectionState() const;
     // Why the place is disconnected; empty while connected.
     std::string connectionError() const;
-    // "host:port", or what the connector describes.
+    // "host:port"; with a connector and no host, "console".
     std::string address() const;
-    // Connections open now.
+    // Connections this place holds now (the console may have closed some).
     std::size_t openConnections() const;
     // Closes the command connection, opens it again and deletes the temporary
     // uploads left behind. Refused while a transfer uses that connection.
